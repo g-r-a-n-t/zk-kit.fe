@@ -747,3 +747,78 @@ fn test_stateful_remove_uses_custom_zero_when_not_default() {
     assert(err.code() == IMTError::None.code())
     assert(tree.root == depth2_root(5, 2, 5, 5))
 }
+
+#[test]
+fn test_rust_keccak_vector_depth2_zero0() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init(2, 0)
+    assert(err.code() == IMTError::None.code())
+
+    assert(tree.root == 0x0681ccb0c2257b0735276ebdde4e1ea661b473fe8aa3f428e29b9ff332918e74)
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == 0x1c64583e0af5bc135f0c701bacb3fcd119949e28a27b5ea0cc1e5784a9f163e7)
+
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == 0x03001bf4efdb47897a4feefc5f90dc979b3fb90a5e5d3ae22e950671e6de6dc5)
+
+    let (_root, err) = tree.insert(3)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == 0x25fd479788becce1e01c2aa1aa8e93b61f07adcf2c22a03bffe688870af1a82b)
+
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    indices[1] = 1
+
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 0
+    siblings[1] = 0x277a420332215ead37ba61fee84f0d23276a6799e5da57c1354dc37d12a7c2dc
+
+    let (ok, err) = tree.verify(3, siblings, indices)
+    assert(err.code() == IMTError::None.code())
+    assert(ok)
+
+    let err = tree.update(3, 9, siblings, indices)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == 0x15a6d33ba503434ee0ee7d550856b1b31ebbf28eeaf795c2df83d0feaa48d84c)
+
+    let (ok, err) = tree.verify(9, siblings, indices)
+    assert(err.code() == IMTError::None.code())
+    assert(ok)
+
+    let err = tree.remove(9, siblings, indices)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == 0x03001bf4efdb47897a4feefc5f90dc979b3fb90a5e5d3ae22e950671e6de6dc5)
+}
+
+#[test]
+fn test_rust_keccak_vector_depth2_zero5() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init(2, 5)
+    assert(err.code() == IMTError::None.code())
+
+    assert(tree.root == 0x22eb55a0861a47074dc4892f16134aa8430ebed2ab71e51965a0c3a8680c8fc9)
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == 0x23c3198144e20a41ffa81d54ca35a4519740ff18d8299509390f913a85df8320)
+
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == 0x0c9879b9b7fe0a754fb97d4bd43c1ccdb64a2f2335acbf3fdd9c2f1849e01033)
+
+    let indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 2
+    siblings[1] = 0x1526e24ff5fa5d02aac6ea93c413945dd62b8a54b75845ce98583e2958e5432c
+
+    let (ok, err) = tree.verify(1, siblings, indices)
+    assert(err.code() == IMTError::None.code())
+    assert(ok)
+
+    let err = tree.remove(1, siblings, indices)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == 0x13e8d24f778a3c96935a2f75cbac43354d20f3412a525b735cc9d30153a366a0)
+}
