@@ -1,0 +1,749 @@
+use std::evm::effects::assert
+use std::evm::mem
+use std::evm::ops::{keccak256, mstore}
+
+const MAX_DEPTH: usize = 32
+const SNARK_SCALAR_FIELD: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+pub enum IMTError {
+    None,
+    DepthNotSupported,
+    ValueGreaterThanSnarkScalarField,
+    WrongMerkleProofPath,
+    TreeIsFull,
+    NewLeafCannotEqualOldLeaf,
+    LeafDoesNotExist,
+    LeafIndexOutOfRange,
+}
+
+impl IMTError {
+    pub fn is_none(self) -> bool {
+        match self {
+            IMTError::None => true
+            _ => false
+        }
+    }
+
+    pub fn code(self) -> u256 {
+        match self {
+            IMTError::None => 0
+            IMTError::DepthNotSupported => 1
+            IMTError::ValueGreaterThanSnarkScalarField => 2
+            IMTError::WrongMerkleProofPath => 3
+            IMTError::TreeIsFull => 4
+            IMTError::NewLeafCannotEqualOldLeaf => 5
+            IMTError::LeafDoesNotExist => 6
+            IMTError::LeafIndexOutOfRange => 7
+        }
+    }
+}
+
+pub struct IMT {
+    pub depth: usize,
+    pub root: u256,
+}
+
+impl Copy for IMT {}
+
+fn hash2(left: u256, right: u256) -> u256 {
+    let ptr = mem::alloc(64)
+    mstore(ptr, left)
+    mstore(ptr + 32, right)
+    keccak256(ptr, 64) % SNARK_SCALAR_FIELD
+}
+
+impl IMT {
+    pub fn new(depth: usize, root: u256) -> Self {
+        assert(depth > 0 && depth <= MAX_DEPTH)
+        IMT { depth: depth, root: root }
+    }
+
+    pub fn calculate_root(
+        self,
+        leaf: u256,
+        proof_depth: usize,
+        indices: [u8; MAX_DEPTH],
+        siblings: [u256; MAX_DEPTH],
+    ) -> u256 {
+        let mut node = leaf
+        let mut i: usize = 0
+
+        while i < MAX_DEPTH {
+            if i < proof_depth {
+                if indices[i] == 0 {
+                    node = hash2(node, siblings[i])
+                } else {
+                    node = hash2(siblings[i], node)
+                }
+            }
+
+            i += 1
+        }
+
+        node
+    }
+
+    pub fn verify(
+        self,
+        leaf: u256,
+        proof_depth: usize,
+        indices: [u8; MAX_DEPTH],
+        siblings: [u256; MAX_DEPTH],
+    ) -> bool {
+        let (ok, err) = self.verify_checked(leaf, proof_depth, indices, siblings)
+        if err.is_none() {
+            ok
+        } else {
+            false
+        }
+    }
+
+    pub fn verify_checked(
+        self,
+        leaf: u256,
+        proof_depth: usize,
+        indices: [u8; MAX_DEPTH],
+        siblings: [u256; MAX_DEPTH],
+    ) -> (bool, IMTError) {
+        if self.depth == 0 || self.depth > MAX_DEPTH {
+            return (false, IMTError::DepthNotSupported)
+        }
+
+        if proof_depth != self.depth {
+            return (false, IMTError::WrongMerkleProofPath)
+        }
+
+        if leaf >= SNARK_SCALAR_FIELD {
+            return (false, IMTError::ValueGreaterThanSnarkScalarField)
+        }
+
+        let mut node = leaf
+        let mut i: usize = 0
+
+        while i < proof_depth {
+            if siblings[i] >= SNARK_SCALAR_FIELD {
+                return (false, IMTError::ValueGreaterThanSnarkScalarField)
+            }
+
+            if indices[i] != 0 && indices[i] != 1 {
+                return (false, IMTError::WrongMerkleProofPath)
+            }
+
+            if indices[i] == 0 {
+                node = hash2(node, siblings[i])
+            } else {
+                node = hash2(siblings[i], node)
+            }
+
+            i += 1
+        }
+
+        (node == self.root, IMTError::None)
+    }
+}
+
+pub struct Subtree {
+    pub left: u256,
+    pub right: u256,
+}
+
+impl Copy for Subtree {}
+
+pub struct BinaryIMTData {
+    pub depth: usize,
+    pub root: u256,
+    pub number_of_leaves: usize,
+    pub zeroes: [u256; MAX_DEPTH],
+    pub last_subtrees: [Subtree; MAX_DEPTH],
+    pub use_default_zeroes: bool,
+}
+
+impl BinaryIMTData {
+    pub fn empty() -> Self {
+        BinaryIMTData {
+            depth: 0,
+            root: 0,
+            number_of_leaves: 0,
+            zeroes: [0; MAX_DEPTH],
+            last_subtrees: [Subtree { left: 0, right: 0 }; MAX_DEPTH],
+            use_default_zeroes: false,
+        }
+    }
+
+    pub fn default_zero(index: usize) -> u256 {
+        assert(index <= MAX_DEPTH)
+
+        let mut z: u256 = 0
+        let mut i: usize = 0
+
+        while i < index {
+            z = hash2(z, z)
+            i += 1
+        }
+
+        z
+    }
+
+    pub fn init(mut self, depth: usize, zero: u256) -> IMTError {
+        if zero >= SNARK_SCALAR_FIELD {
+            return IMTError::ValueGreaterThanSnarkScalarField
+        }
+
+        if depth == 0 || depth > MAX_DEPTH {
+            return IMTError::DepthNotSupported
+        }
+
+        self.depth = depth
+        self.root = 0
+        self.number_of_leaves = 0
+        self.use_default_zeroes = false
+        self.zeroes = [0; MAX_DEPTH]
+        self.last_subtrees = [Subtree { left: 0, right: 0 }; MAX_DEPTH]
+
+        let mut current_zero = zero
+        let mut i: usize = 0
+
+        while i < depth {
+            self.zeroes[i] = current_zero
+            current_zero = hash2(current_zero, current_zero)
+            i += 1
+        }
+
+        self.root = current_zero
+
+        IMTError::None
+    }
+
+    pub fn init_with_default_zeroes(mut self, depth: usize) -> IMTError {
+        if depth == 0 || depth > MAX_DEPTH {
+            return IMTError::DepthNotSupported
+        }
+
+        self.depth = depth
+        self.root = BinaryIMTData::default_zero(depth)
+        self.number_of_leaves = 0
+        self.use_default_zeroes = true
+        self.zeroes = [0; MAX_DEPTH]
+        self.last_subtrees = [Subtree { left: 0, right: 0 }; MAX_DEPTH]
+
+        IMTError::None
+    }
+
+    fn zero_at(self, level: usize) -> u256 {
+        if self.use_default_zeroes {
+            BinaryIMTData::default_zero(level)
+        } else {
+            self.zeroes[level]
+        }
+    }
+
+    pub fn insert(mut self, leaf: u256) -> (u256, IMTError) {
+        if self.depth == 0 || self.depth > MAX_DEPTH {
+            return (0, IMTError::DepthNotSupported)
+        }
+
+        if leaf >= SNARK_SCALAR_FIELD {
+            return (0, IMTError::ValueGreaterThanSnarkScalarField)
+        }
+
+        let capacity: usize = 1 << self.depth
+        if self.number_of_leaves >= capacity {
+            return (0, IMTError::TreeIsFull)
+        }
+
+        let mut index = self.number_of_leaves
+        let mut h = leaf
+        let mut i: usize = 0
+
+        while i < self.depth {
+            if index & 1 == 0 {
+                self.last_subtrees[i].left = h
+                self.last_subtrees[i].right = self.zero_at(i)
+            } else {
+                self.last_subtrees[i].right = h
+            }
+
+            h = hash2(self.last_subtrees[i].left, self.last_subtrees[i].right)
+            index >>= 1
+            i += 1
+        }
+
+        self.root = h
+        self.number_of_leaves += 1
+
+        (h, IMTError::None)
+    }
+
+    pub fn verify(
+        self,
+        leaf: u256,
+        siblings: [u256; MAX_DEPTH],
+        indices: [u8; MAX_DEPTH],
+    ) -> (bool, IMTError) {
+        let imt = IMT { depth: self.depth, root: self.root }
+        imt.verify_checked(leaf, self.depth, indices, siblings)
+    }
+
+    pub fn update(
+        mut self,
+        leaf: u256,
+        new_leaf: u256,
+        siblings: [u256; MAX_DEPTH],
+        indices: [u8; MAX_DEPTH],
+    ) -> IMTError {
+        if new_leaf == leaf {
+            return IMTError::NewLeafCannotEqualOldLeaf
+        }
+
+        if new_leaf >= SNARK_SCALAR_FIELD {
+            return IMTError::ValueGreaterThanSnarkScalarField
+        }
+
+        let (ok, err) = self.verify(leaf, siblings, indices)
+        if !err.is_none() {
+            return err
+        }
+
+        if !ok {
+            return IMTError::LeafDoesNotExist
+        }
+
+        let mut h = new_leaf
+        let mut update_index: usize = 0
+        let mut i: usize = 0
+
+        while i < self.depth {
+            let path = indices[i]
+            update_index |= (path as usize) << i
+
+            if path == 0 {
+                if siblings[i] == self.last_subtrees[i].right {
+                    self.last_subtrees[i].left = h
+                }
+
+                h = hash2(h, siblings[i])
+            } else {
+                if siblings[i] == self.last_subtrees[i].left {
+                    self.last_subtrees[i].right = h
+                }
+
+                h = hash2(siblings[i], h)
+            }
+
+            i += 1
+        }
+
+        if update_index >= self.number_of_leaves {
+            return IMTError::LeafIndexOutOfRange
+        }
+
+        self.root = h
+
+        IMTError::None
+    }
+
+    pub fn remove(
+        mut self,
+        leaf: u256,
+        siblings: [u256; MAX_DEPTH],
+        indices: [u8; MAX_DEPTH],
+    ) -> IMTError {
+        let replacement = if self.use_default_zeroes {
+            0
+        } else {
+            self.zeroes[0]
+        }
+
+        self.update(leaf, replacement, siblings, indices)
+    }
+}
+
+fn depth2_root(l0: u256, l1: u256, l2: u256, l3: u256) -> u256 {
+    hash2(hash2(l0, l1), hash2(l2, l3))
+}
+
+#[test]
+fn test_verify_depth_1_happy_path() {
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 11
+
+    let leaf: u256 = 7
+    let root = hash2(leaf, siblings[0])
+    let imt = IMT::new(1, root)
+
+    let ok = imt.verify(leaf, 1, indices, siblings)
+    assert(ok)
+}
+
+#[test]
+fn test_verify_depth_4_happy_path() {
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    indices[1] = 1
+    indices[3] = 1
+
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 11
+    siblings[1] = 13
+    siblings[2] = 17
+    siblings[3] = 19
+
+    let leaf: u256 = 7
+    let root = hash2(
+        19,
+        hash2(
+            hash2(
+                13,
+                hash2(leaf, 11),
+            ),
+            17,
+        ),
+    )
+
+    let imt = IMT::new(4, root)
+    let ok = imt.verify(leaf, 4, indices, siblings)
+    assert(ok)
+}
+
+#[test]
+fn test_verify_depth_32_boundary_happy_path() {
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let siblings: [u256; MAX_DEPTH] = [1; MAX_DEPTH]
+
+    let leaf: u256 = 5
+    let temp = IMT::new(32, 0)
+    let root = temp.calculate_root(leaf, 32, indices, siblings)
+    let imt = IMT::new(32, root)
+
+    let (ok, err) = imt.verify_checked(leaf, 32, indices, siblings)
+    assert(ok)
+    assert(err.code() == 0)
+}
+
+#[test]
+fn test_wrong_proof_returns_false() {
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    indices[1] = 1
+    indices[3] = 1
+
+    let mut good_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    good_siblings[0] = 11
+    good_siblings[1] = 13
+    good_siblings[2] = 17
+    good_siblings[3] = 19
+
+    let mut bad_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    bad_siblings[0] = 12
+    bad_siblings[1] = 13
+    bad_siblings[2] = 17
+    bad_siblings[3] = 19
+
+    let leaf: u256 = 7
+    let root = hash2(
+        19,
+        hash2(
+            hash2(
+                13,
+                hash2(leaf, 11),
+            ),
+            17,
+        ),
+    )
+
+    let imt = IMT::new(4, root)
+    let ok_good = imt.verify(leaf, 4, indices, good_siblings)
+    let ok_bad = imt.verify(leaf, 4, indices, bad_siblings)
+    let (checked_bad, err) = imt.verify_checked(leaf, 4, indices, bad_siblings)
+
+    assert(ok_good)
+    assert(!ok_bad)
+    assert(!checked_bad)
+    assert(err.code() == 0)
+}
+
+#[test]
+fn test_depth_mismatch_error() {
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 11
+    siblings[1] = 13
+    siblings[2] = 17
+    siblings[3] = 19
+
+    let imt = IMT::new(4, 0)
+    let (_ok, err) = imt.verify_checked(7, 3, indices, siblings)
+    assert(err.code() == 3)
+}
+
+#[test]
+fn test_invalid_index_error() {
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    indices[0] = 2
+
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 11
+    siblings[1] = 13
+
+    let imt = IMT::new(1, 0)
+    let (_ok, err) = imt.verify_checked(7, 1, indices, siblings)
+    assert(err.code() == 3)
+}
+
+#[test]
+fn test_invalid_leaf_error() {
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 11
+
+    let imt = IMT::new(1, 0)
+    let (_ok, err) = imt.verify_checked(SNARK_SCALAR_FIELD, 1, indices, siblings)
+    assert(err.code() == 2)
+}
+
+#[test]
+fn test_invalid_used_sibling_error() {
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = SNARK_SCALAR_FIELD
+
+    let imt = IMT::new(1, 0)
+    let (_ok, err) = imt.verify_checked(7, 1, indices, siblings)
+    assert(err.code() == 2)
+}
+
+#[test]
+fn test_unused_tail_is_ignored() {
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    indices[0] = 1
+
+    let mut siblings_a: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings_a[0] = 8
+    siblings_a[1] = 9
+
+    let mut siblings_b: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings_b[0] = 8
+    siblings_b[1] = 9
+    siblings_b[2] = SNARK_SCALAR_FIELD
+    siblings_b[3] = 123456
+    siblings_b[4] = 789
+    siblings_b[5] = 777
+    siblings_b[6] = 888
+    siblings_b[7] = 999
+    siblings_b[8] = 1
+    siblings_b[9] = 2
+    siblings_b[10] = 3
+    siblings_b[11] = 4
+    siblings_b[12] = 5
+    siblings_b[13] = 6
+    siblings_b[14] = 7
+    siblings_b[15] = 8
+
+    let leaf: u256 = 7
+    let temp = IMT::new(2, 0)
+    let root_a = temp.calculate_root(leaf, 2, indices, siblings_a)
+    let root_b = temp.calculate_root(leaf, 2, indices, siblings_b)
+
+    assert(root_a == root_b)
+
+    let imt = IMT::new(2, root_a)
+    let (ok, err) = imt.verify_checked(leaf, 2, indices, siblings_b)
+    assert(ok)
+    assert(err.code() == 0)
+}
+
+#[test]
+fn test_depth_not_supported_error_on_verify_checked() {
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+
+    let imt = IMT { depth: 0, root: 0 }
+    let (_ok, err) = imt.verify_checked(0, 0, indices, siblings)
+    assert(err.code() == 1)
+}
+
+#[test(should_revert)]
+fn test_new_rejects_depth_0() {
+    let _imt = IMT::new(0, 0)
+}
+
+#[test(should_revert)]
+fn test_new_rejects_depth_33() {
+    let _imt = IMT::new(33, 0)
+}
+
+#[test]
+fn test_stateful_init_validation() {
+    let mut tree = BinaryIMTData::empty()
+
+    let err = tree.init(0, 0)
+    assert(err.code() == IMTError::DepthNotSupported.code())
+
+    let err = tree.init(33, 0)
+    assert(err.code() == IMTError::DepthNotSupported.code())
+
+    let err = tree.init(1, SNARK_SCALAR_FIELD)
+    assert(err.code() == IMTError::ValueGreaterThanSnarkScalarField.code())
+}
+
+#[test]
+fn test_stateful_init_with_default_zeroes() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init_with_default_zeroes(3)
+
+    assert(err.code() == IMTError::None.code())
+    assert(tree.use_default_zeroes)
+    assert(tree.depth == 3)
+    assert(tree.number_of_leaves == 0)
+    assert(tree.root == BinaryIMTData::default_zero(3))
+}
+
+#[test]
+fn test_stateful_insert_and_tree_full() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init(1, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == hash2(1, 2))
+    assert(tree.number_of_leaves == 2)
+
+    let (_root, err) = tree.insert(3)
+    assert(err.code() == IMTError::TreeIsFull.code())
+}
+
+#[test]
+fn test_stateful_insert_matches_default_zeroes_mode() {
+    let mut a = BinaryIMTData::empty()
+    let mut b = BinaryIMTData::empty()
+
+    let err = a.init_with_default_zeroes(3)
+    assert(err.code() == IMTError::None.code())
+    let err = b.init(3, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = a.insert(7)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = b.insert(7)
+    assert(err.code() == IMTError::None.code())
+
+    assert(a.root == b.root)
+}
+
+#[test]
+fn test_stateful_update_and_remove_roundtrip() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init(2, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = tree.insert(3)
+    assert(err.code() == IMTError::None.code())
+
+    assert(tree.root == depth2_root(1, 2, 3, 0))
+
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    indices[1] = 1
+
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 0
+    siblings[1] = hash2(1, 2)
+
+    let err = tree.update(3, 9, siblings, indices)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == depth2_root(1, 2, 9, 0))
+
+    let err = tree.remove(9, siblings, indices)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == depth2_root(1, 2, 0, 0))
+}
+
+#[test]
+fn test_stateful_update_error_cases() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init(1, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == IMTError::None.code())
+
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 2
+
+    let err = tree.update(1, 1, siblings, indices)
+    assert(err.code() == IMTError::NewLeafCannotEqualOldLeaf.code())
+
+    let err = tree.update(1, SNARK_SCALAR_FIELD, siblings, indices)
+    assert(err.code() == IMTError::ValueGreaterThanSnarkScalarField.code())
+
+    let mut bad_indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    bad_indices[0] = 2
+    let err = tree.update(1, 8, siblings, bad_indices)
+    assert(err.code() == IMTError::WrongMerkleProofPath.code())
+
+    let err = tree.update(9, 8, siblings, indices)
+    assert(err.code() == IMTError::LeafDoesNotExist.code())
+}
+
+#[test]
+fn test_stateful_leaf_index_out_of_range() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init(3, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = tree.insert(3)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = tree.insert(4)
+    assert(err.code() == IMTError::None.code())
+
+    let n0 = hash2(hash2(1, 2), hash2(3, 4))
+    let z1 = hash2(0, 0)
+
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    indices[1] = 1
+    indices[2] = 1
+
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 0
+    siblings[1] = z1
+    siblings[2] = n0
+
+    let err = tree.update(0, 42, siblings, indices)
+    assert(err.code() == IMTError::LeafIndexOutOfRange.code())
+}
+
+#[test]
+fn test_stateful_remove_uses_custom_zero_when_not_default() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init(2, 5)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == IMTError::None.code())
+
+    assert(tree.root == depth2_root(1, 2, 5, 5))
+
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 2
+    siblings[1] = hash2(5, 5)
+
+    let err = tree.remove(1, siblings, indices)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == depth2_root(5, 2, 5, 5))
+}

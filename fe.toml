@@ -1,0 +1,8 @@
+# Ingot config
+[ingot]
+name = "zk_kit_fe"
+version = "0.1.0"
+
+# Optional dependencies
+# [dependencies]
+# utils = { path = "../utils" }
