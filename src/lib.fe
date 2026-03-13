@@ -2480,6 +2480,141 @@ fn test_quinary_invalid_path_index_error() {
     assert(err.code() == IMTError::WrongMerkleProofPath.code())
 }
 
+#[test]
+fn test_quinary_init_and_update_error_cases() {
+    let mut tree = QuinaryIMTData::empty()
+
+    let err = tree.init(0, 0)
+    assert(err.code() == IMTError::DepthNotSupported.code())
+
+    let err = tree.init(33, 0)
+    assert(err.code() == IMTError::DepthNotSupported.code())
+
+    let err = tree.init(1, SNARK_SCALAR_FIELD)
+    assert(
+        err.code() == IMTError::ValueGreaterThanSnarkScalarField.code(),
+    )
+
+    let err = tree.init(1, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(SNARK_SCALAR_FIELD)
+    assert(
+        err.code() == IMTError::ValueGreaterThanSnarkScalarField.code(),
+    )
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+
+    let indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let siblings: [u256; QUINARY_SIBLINGS_LEN] = [0; QUINARY_SIBLINGS_LEN]
+
+    let err = tree.update(1, 1, siblings, indices)
+    assert(err.code() == IMTError::NewLeafCannotEqualOldLeaf.code())
+
+    let err = tree.update(1, SNARK_SCALAR_FIELD, siblings, indices)
+    assert(
+        err.code() == IMTError::ValueGreaterThanSnarkScalarField.code(),
+    )
+
+    let err = tree.update(SNARK_SCALAR_FIELD, 2, siblings, indices)
+    assert(
+        err.code() == IMTError::ValueGreaterThanSnarkScalarField.code(),
+    )
+
+    let mut bad_indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    bad_indices[0] = 5
+    let err = tree.update(1, 2, siblings, bad_indices)
+    assert(err.code() == IMTError::WrongMerkleProofPath.code())
+
+    let err = tree.update(2, 3, siblings, indices)
+    assert(err.code() == IMTError::LeafDoesNotExist.code())
+
+    let err = tree.remove(SNARK_SCALAR_FIELD, siblings, indices)
+    assert(
+        err.code() == IMTError::ValueGreaterThanSnarkScalarField.code(),
+    )
+
+    let err = tree.remove(2, siblings, indices)
+    assert(err.code() == IMTError::LeafDoesNotExist.code())
+}
+
+#[test]
+fn test_quinary_leaf_index_out_of_range() {
+    let mut tree = QuinaryIMTData::empty()
+    let err = tree.init(2, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = tree.insert(3)
+    assert(err.code() == IMTError::None.code())
+    let (_root, err) = tree.insert(4)
+    assert(err.code() == IMTError::None.code())
+
+    let z1 = tree.zeroes[1]
+
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    indices[0] = 4
+
+    let mut siblings: [u256; QUINARY_SIBLINGS_LEN] = [0; QUINARY_SIBLINGS_LEN]
+    siblings[quinary_sibling_slot(0, 0)] = 1
+    siblings[quinary_sibling_slot(0, 1)] = 2
+    siblings[quinary_sibling_slot(0, 2)] = 3
+    siblings[quinary_sibling_slot(0, 3)] = 4
+    siblings[quinary_sibling_slot(1, 0)] = z1
+    siblings[quinary_sibling_slot(1, 1)] = z1
+    siblings[quinary_sibling_slot(1, 2)] = z1
+    siblings[quinary_sibling_slot(1, 3)] = z1
+
+    let err = tree.update(0, 42, siblings, indices)
+    assert(err.code() == IMTError::LeafIndexOutOfRange.code())
+}
+
+#[test]
+fn test_quinary_insert_after_remove_preserves_holes() {
+    let mut tree = QuinaryIMTData::empty()
+    let err = tree.init(2, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+
+    let z1 = tree.zeroes[1]
+
+    let remove_indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut remove_siblings: [u256; QUINARY_SIBLINGS_LEN] = [0; QUINARY_SIBLINGS_LEN]
+    remove_siblings[quinary_sibling_slot(1, 0)] = z1
+    remove_siblings[quinary_sibling_slot(1, 1)] = z1
+    remove_siblings[quinary_sibling_slot(1, 2)] = z1
+    remove_siblings[quinary_sibling_slot(1, 3)] = z1
+
+    let err = tree.remove(1, remove_siblings, remove_indices)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == IMTError::None.code())
+
+    let level0 = hash5_nodes([0, 2, 0, 0, 0])
+    let expected_root = hash5(level0, z1, z1, z1, z1)
+    assert(tree.root == expected_root)
+
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    indices[0] = 1
+
+    let mut siblings: [u256; QUINARY_SIBLINGS_LEN] = [0; QUINARY_SIBLINGS_LEN]
+    siblings[quinary_sibling_slot(1, 0)] = z1
+    siblings[quinary_sibling_slot(1, 1)] = z1
+    siblings[quinary_sibling_slot(1, 2)] = z1
+    siblings[quinary_sibling_slot(1, 3)] = z1
+
+    let (ok, err) = tree.verify(2, siblings, indices)
+    assert(err.code() == IMTError::None.code())
+    assert(ok)
+}
+
 const MAX_DEPTH_PLUS_ONE: usize = MAX_DEPTH + 1
 const LAZY_MAP_CAPACITY: usize = 256
 const LAZY_MAP_CAPACITY_U256: u256 = 256
