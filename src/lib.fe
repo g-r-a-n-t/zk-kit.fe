@@ -2001,6 +2001,61 @@ fn test_stateful_remove_uses_custom_zero_when_not_default() {
 }
 
 #[test]
+fn test_stateful_remove_error_cases() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init(1, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+
+    let siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    let indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+
+    let err = tree.remove(SNARK_SCALAR_FIELD, siblings, indices)
+    assert(
+        err.code() == IMTError::ValueGreaterThanSnarkScalarField.code(),
+    )
+
+    let err = tree.remove(2, siblings, indices)
+    assert(err.code() == IMTError::LeafDoesNotExist.code())
+}
+
+#[test]
+fn test_stateful_remove_in_default_zeroes_mode_and_reinsert() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init_with_default_zeroes(2)
+    assert(err.code() == IMTError::None.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == IMTError::None.code())
+
+    let z1 = BinaryIMTData::default_zero(1)
+
+    let mut remove_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    remove_siblings[1] = z1
+    let remove_indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+
+    let err = tree.remove(1, remove_siblings, remove_indices)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == BinaryIMTData::default_zero(2))
+
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == IMTError::None.code())
+    assert(tree.root == depth2_root(0, 2, 0, 0))
+
+    let mut verify_indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    verify_indices[0] = 1
+
+    let mut verify_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    verify_siblings[1] = z1
+
+    let (ok, err) = tree.verify(2, verify_siblings, verify_indices)
+    assert(err.code() == IMTError::None.code())
+    assert(ok)
+}
+
+#[test]
 fn test_poseidon_default_zero_constants_match_solidity() {
     assert(BinaryIMTData::default_zero(0) == 0)
     assert(
