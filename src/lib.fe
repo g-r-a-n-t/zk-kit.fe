@@ -3681,6 +3681,87 @@ fn test_lean_insert_many_update_remove_roundtrip() {
 }
 
 #[test]
+fn test_lean_insert_many_error_cases() {
+    let mut too_many: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    let mut tree = LeanIMTData::empty()
+
+    let (_root, err) = tree.insert_many(too_many, LEAN_BATCH_MAX + 1)
+    assert(err.code() == LeanIMTError::DepthNotSupported.code())
+
+    let mut invalid_leaf: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    invalid_leaf[0] = SNARK_SCALAR_FIELD
+    let (_root, err) = tree.insert_many(invalid_leaf, 1)
+    assert(
+        err.code() == LeanIMTError::LeafGreaterThanSnarkScalarField.code(),
+    )
+
+    let mut zero_leaf: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    zero_leaf[0] = 0
+    let (_root, err) = tree.insert_many(zero_leaf, 1)
+    assert(err.code() == LeanIMTError::LeafCannotBeZero.code())
+
+    let mut duplicate_batch: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    duplicate_batch[0] = 7
+    duplicate_batch[1] = 7
+    let (_root, err) = tree.insert_many(duplicate_batch, 2)
+    assert(err.code() == LeanIMTError::LeafAlreadyExists.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let mut duplicate_existing: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    duplicate_existing[0] = 1
+    let (_root, err) = tree.insert_many(duplicate_existing, 1)
+    assert(err.code() == LeanIMTError::LeafAlreadyExists.code())
+}
+
+#[test]
+fn test_lean_insert_many_when_tree_is_not_empty() {
+    let mut tree = LeanIMTData::empty()
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let mut batch: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    batch[0] = 2
+    batch[1] = 3
+    batch[2] = 4
+
+    let (_root, err) = tree.insert_many(batch, 3)
+    assert(err.code() == LeanIMTError::None.code())
+    assert(tree.root() == hash2(hash2(1, 2), hash2(3, 4)))
+    assert(tree.has(1))
+    assert(tree.has(2))
+    assert(tree.has(3))
+    assert(tree.has(4))
+}
+
+#[test]
+fn test_lean_update_rejects_existing_and_removed_leaves() {
+    let mut tree = LeanIMTData::empty()
+    let mut batch: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    batch[0] = 1
+    batch[1] = 2
+
+    let (_root, err) = tree.insert_many(batch, 2)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 2
+
+    let (_root, err) = tree.update(1, 2, siblings, 1)
+    assert(err.code() == LeanIMTError::LeafAlreadyExists.code())
+
+    let mut remove_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    remove_siblings[0] = 1
+    let (_root, err) = tree.remove(2, remove_siblings, 1)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let (_root, err) = tree.update(2, 3, siblings, 1)
+    assert(err.code() == LeanIMTError::LeafDoesNotExist.code())
+}
+
+#[test]
 fn test_lean_error_cases() {
     let mut tree = LeanIMTData::empty()
     let (_root, err) = tree.insert(0)
