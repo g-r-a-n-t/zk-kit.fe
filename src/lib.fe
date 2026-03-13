@@ -3093,6 +3093,60 @@ fn test_lazy_insert_update_reset_and_roots() {
 }
 
 #[test]
+fn test_lazy_error_cases() {
+    let mut tree = LazyIMTData::empty()
+    let err = tree.init(3)
+    assert(err.code() == LazyIMTError::None.code())
+
+    let err = tree.insert(SNARK_SCALAR_FIELD)
+    assert(err.code() == LazyIMTError::LeafMustBeInField.code())
+
+    let err = tree.insert(1)
+    assert(err.code() == LazyIMTError::None.code())
+    let err = tree.insert(2)
+    assert(err.code() == LazyIMTError::None.code())
+
+    let err = tree.update(SNARK_SCALAR_FIELD, 0)
+    assert(err.code() == LazyIMTError::LeafMustBeInField.code())
+
+    let err = tree.update(9, 2)
+    assert(err.code() == LazyIMTError::LeafMustExist.code())
+
+    let (_root, err) = tree.root_at_depth(0)
+    assert(err.code() == LazyIMTError::DepthMustBePositive.code())
+}
+
+#[test]
+fn test_lazy_reset_reuses_tree() {
+    let mut tree = LazyIMTData::empty()
+    let err = tree.init(3)
+    assert(err.code() == LazyIMTError::None.code())
+
+    let err = tree.insert(1)
+    assert(err.code() == LazyIMTError::None.code())
+    let err = tree.insert(2)
+    assert(err.code() == LazyIMTError::None.code())
+    let err = tree.insert(3)
+    assert(err.code() == LazyIMTError::None.code())
+
+    tree.reset()
+    assert(tree.number_of_leaves == 0)
+
+    let err = tree.insert(7)
+    assert(err.code() == LazyIMTError::None.code())
+    let err = tree.insert(8)
+    assert(err.code() == LazyIMTError::None.code())
+
+    let (root, err) = tree.root()
+    assert(err.code() == LazyIMTError::None.code())
+    assert(root == hash2(7, 8))
+
+    let (root_at_depth, err) = tree.root_at_depth(1)
+    assert(err.code() == LazyIMTError::None.code())
+    assert(root_at_depth == root)
+}
+
+#[test]
 fn test_lazy_insert_allows_last_leaf_slot() {
     let mut tree = LazyIMTData::empty()
     let err = tree.init(1)
