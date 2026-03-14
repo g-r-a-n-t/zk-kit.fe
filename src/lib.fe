@@ -1630,6 +1630,27 @@ fn depth2_root(l0: u256, l1: u256, l2: u256, l3: u256) -> u256 {
     hash2(hash2(l0, l1), hash2(l2, l3))
 }
 
+fn binary_depth2_proof(slots: [u256; 4], index: usize) -> ([u256; MAX_DEPTH], [u8; MAX_DEPTH]) {
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+
+    if index % 2 == 1 {
+        siblings[0] = slots[index - 1]
+        indices[0] = 1
+    } else {
+        siblings[0] = slots[index + 1]
+    }
+
+    if index < 2 {
+        siblings[1] = hash2(slots[2], slots[3])
+    } else {
+        siblings[1] = hash2(slots[0], slots[1])
+        indices[1] = 1
+    }
+
+    (siblings, indices)
+}
+
 #[test]
 fn test_verify_depth_1_happy_path() {
     let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
@@ -1886,6 +1907,24 @@ fn test_stateful_insert_matches_default_zeroes_mode() {
 }
 
 #[test]
+fn test_stateful_insert_four_leaves_matches_depth2_root() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init(2, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let mut slots: [u256; 4] = [0; 4]
+    let mut i: usize = 0
+    while i < 4 {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == IMTError::None.code())
+        assert(tree.root == depth2_root(slots[0], slots[1], slots[2], slots[3]))
+        i += 1
+    }
+}
+
+#[test]
 fn test_stateful_update_and_remove_roundtrip() {
     let mut tree = BinaryIMTData::empty()
     let err = tree.init(2, 0)
@@ -2055,6 +2094,35 @@ fn test_stateful_remove_in_default_zeroes_mode_and_reinsert() {
     let (ok, err) = tree.verify(2, verify_siblings, verify_indices)
     assert(err.code() == IMTError::None.code())
     assert(ok)
+}
+
+#[test]
+fn test_stateful_insert_four_leaves_and_remove_them_all() {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init(2, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let mut slots: [u256; 4] = [0; 4]
+    let mut i: usize = 0
+    while i < 4 {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == IMTError::None.code())
+        i += 1
+    }
+    assert(tree.root == depth2_root(1, 2, 3, 4))
+
+    i = 0
+    while i < 4 {
+        let leaf = slots[i]
+        let (siblings, indices) = binary_depth2_proof(slots, i)
+        let err = tree.remove(leaf, siblings, indices)
+        assert(err.code() == IMTError::None.code())
+        slots[i] = 0
+        assert(tree.root == depth2_root(slots[0], slots[1], slots[2], slots[3]))
+        i += 1
+    }
 }
 
 #[test]
