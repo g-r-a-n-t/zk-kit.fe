@@ -4493,6 +4493,29 @@ fn eas_attestation_err(
     ExcubiaError::None
 }
 
+fn semaphore_proof_err(
+    semaphore: Address,
+    group_id: u256,
+    scope: u256,
+    nullifier: u256,
+) -> ExcubiaError uses (call: mut Call) {
+    if scope != group_id {
+        return ExcubiaError::UnexpectedScope
+    }
+
+    let is_valid: bool = call.call(
+        addr: semaphore,
+        gas: 100000,
+        value: 0,
+        message: MockSemaphoreMsg::VerifyProof { group_id: group_id, nullifier: nullifier },
+    )
+    if !is_valid {
+        return ExcubiaError::InvalidProof
+    }
+
+    ExcubiaError::None
+}
+
 msg FreeForAllExcubiaMsg {
     #[selector = 0x51000001]
     SetGate { gate: Address } -> u256,
@@ -5109,6 +5132,183 @@ pub contract EASExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
     }
 }
 
+msg MockSemaphoreMsg {
+    #[selector = 0x5b000001]
+    GroupCounter -> u256,
+    #[selector = 0x5b000002]
+    VerifyProof { group_id: u256, nullifier: u256 } -> bool,
+}
+
+struct MockSemaphoreStore {
+    group_counter: u256,
+    groups: StorageMap<u256, bool>,
+    proofs: StorageMap<u256, bool>,
+}
+
+pub contract MockSemaphore {
+    mut store: MockSemaphoreStore
+
+    init() uses (mut store) {
+        store.group_counter = 1
+        store.groups.set(key: 0, value: true)
+        store.proofs.set(key: 0, value: true)
+        store.proofs.set(key: 1, value: false)
+    }
+
+    recv MockSemaphoreMsg {
+        GroupCounter -> u256 uses (store) {
+            store.group_counter
+        }
+
+        VerifyProof { group_id, nullifier } -> bool uses (store) {
+            store.groups.get(key: group_id) && store.proofs.get(key: nullifier)
+        }
+    }
+}
+
+msg SemaphoreExcubiaMsg {
+    #[selector = 0x5c000001]
+    SetGate { gate: Address } -> u256,
+    #[selector = 0x5c000002]
+    Check {
+        passerby: Address,
+        merkle_tree_depth: u256,
+        merkle_tree_root: u256,
+        nullifier: u256,
+        message_value: u256,
+        scope: u256,
+        points: [u256; 8],
+    } -> u256,
+    #[selector = 0x5c000003]
+    Pass {
+        passerby: Address,
+        merkle_tree_depth: u256,
+        merkle_tree_root: u256,
+        nullifier: u256,
+        message_value: u256,
+        scope: u256,
+        points: [u256; 8],
+    } -> u256,
+    #[selector = 0x5c000004]
+    Gate -> u256,
+    #[selector = 0x5c000005]
+    Trait -> u256,
+    #[selector = 0x5c000006]
+    HasPassedNullifier { nullifier: u256 } -> bool,
+}
+
+struct SemaphoreExcubiaStore {
+    owner: Address,
+    gate: Address,
+    semaphore: Address,
+    group_id: u256,
+    passed_nullifiers: StorageMap<u256, bool>,
+}
+
+pub contract SemaphoreExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut store: SemaphoreExcubiaStore
+
+    init(semaphore: Address, group_id: u256) uses (mut store, ctx, mut call) {
+        assert(semaphore != Address::zero())
+        let group_counter: u256 = call.call(
+            addr: semaphore,
+            gas: 100000,
+            value: 0,
+            message: MockSemaphoreMsg::GroupCounter {},
+        )
+        assert(group_counter > group_id)
+
+        store.owner = ctx.caller()
+        store.gate = Address::zero()
+        store.semaphore = semaphore
+        store.group_id = group_id
+    }
+
+    recv SemaphoreExcubiaMsg {
+        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
+            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
+            if err.is_none() {
+                store.gate = gate
+                emit_gate_set(gate: gate)
+            }
+            err.code()
+        }
+
+        Check {
+            passerby,
+            merkle_tree_depth,
+            merkle_tree_root,
+            nullifier,
+            message_value,
+            scope,
+            points,
+        } -> u256 uses (store, mut call) {
+            let _ = passerby
+            let _ = merkle_tree_depth
+            let _ = merkle_tree_root
+            let _ = message_value
+            let _ = points
+            semaphore_proof_err(
+                semaphore: store.semaphore,
+                group_id: store.group_id,
+                scope: scope,
+                nullifier: nullifier,
+            )
+            .code()
+        }
+
+        Pass {
+            passerby,
+            merkle_tree_depth,
+            merkle_tree_root,
+            nullifier,
+            message_value,
+            scope,
+            points,
+        } -> u256 uses (mut store, ctx, mut call, mut log) {
+            let err = excubia_gate_only_err(store.gate, ctx.caller())
+            if !err.is_none() {
+                return err.code()
+            }
+            if store.passed_nullifiers.get(key: nullifier) {
+                return ExcubiaError::AlreadyPassed.code()
+            }
+
+            let _ = passerby
+            let _ = merkle_tree_depth
+            let _ = merkle_tree_root
+            let _ = message_value
+            let _ = points
+
+            let err = semaphore_proof_err(
+                semaphore: store.semaphore,
+                group_id: store.group_id,
+                scope: scope,
+                nullifier: nullifier,
+            )
+            if !err.is_none() {
+                return err.code()
+            }
+
+            store.passed_nullifiers.set(key: nullifier, value: true)
+            emit_gate_passed(passerby: passerby, gate: store.gate)
+            ExcubiaError::None.code()
+        }
+
+        Gate -> u256 uses (store) {
+            store.gate.inner
+        }
+
+        Trait -> u256 {
+            EXCUBIA_TRAIT_SEMAPHORE
+        }
+
+        HasPassedNullifier { nullifier } -> bool uses (store) {
+            store.passed_nullifiers.get(key: nullifier)
+        }
+    }
+}
+
 msg ExcubiaCallerMsg {
     #[selector = 0x58000001]
     FreeForAllSetGate { target: Address, gate: Address } -> u256,
@@ -5130,6 +5330,19 @@ msg ExcubiaCallerMsg {
     EASSetGate { target: Address, gate: Address } -> u256,
     #[selector = 0x5800000a]
     EASPass { target: Address, passerby: Address, attestation_id: u256 } -> u256,
+    #[selector = 0x5800000b]
+    SemaphoreSetGate { target: Address, gate: Address } -> u256,
+    #[selector = 0x5800000c]
+    SemaphorePass {
+        target: Address,
+        passerby: Address,
+        merkle_tree_depth: u256,
+        merkle_tree_root: u256,
+        nullifier: u256,
+        message_value: u256,
+        scope: u256,
+        points: [u256; 8],
+    } -> u256,
 }
 
 pub contract ExcubiaCaller uses (call: mut Call) {
@@ -5221,6 +5434,41 @@ pub contract ExcubiaCaller uses (call: mut Call) {
                 gas: 200000,
                 value: 0,
                 message: EASExcubiaMsg::Pass { passerby: passerby, attestation_id: attestation_id },
+            )
+        }
+
+        SemaphoreSetGate { target, gate } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: SemaphoreExcubiaMsg::SetGate { gate: gate },
+            )
+        }
+
+        SemaphorePass {
+            target,
+            passerby,
+            merkle_tree_depth,
+            merkle_tree_root,
+            nullifier,
+            message_value,
+            scope,
+            points,
+        } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: SemaphoreExcubiaMsg::Pass {
+                    passerby: passerby,
+                    merkle_tree_depth: merkle_tree_depth,
+                    merkle_tree_root: merkle_tree_root,
+                    nullifier: nullifier,
+                    message_value: message_value,
+                    scope: scope,
+                    points: points,
+                },
             )
         }
     }
@@ -5824,6 +6072,189 @@ fn test_eas_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
     assert(err == ExcubiaError::AlreadyPassed.code())
 }
 
+#[test]
+fn test_semaphore_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
+    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2060)
+    let semaphore = evm.create2<MockSemaphore>(value: 0, args: (), salt: 2061)
+    let excubia = evm.create2<SemaphoreExcubia>(value: 0, args: (semaphore, 0), salt: 2062)
+    let passerby = Address { inner: 0x6001 }
+
+    let trait_value: u256 = evm.call(addr: excubia, gas: 100000, value: 0, message: SemaphoreExcubiaMsg::Trait {})
+    assert(trait_value == EXCUBIA_TRAIT_SEMAPHORE)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::SemaphoreSetGate { target: excubia, gate: caller },
+    )
+    assert(err == ExcubiaError::OwnerOnly.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: SemaphoreExcubiaMsg::SetGate { gate: Address::zero() },
+    )
+    assert(err == ExcubiaError::ZeroAddress.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: SemaphoreExcubiaMsg::SetGate { gate: caller },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: SemaphoreExcubiaMsg::Check {
+            passerby: passerby,
+            merkle_tree_depth: 1,
+            merkle_tree_root: 0,
+            nullifier: 0,
+            message_value: 0,
+            scope: 1,
+            points: [0, 0, 0, 0, 0, 0, 0, 0],
+        },
+    )
+    assert(err == ExcubiaError::UnexpectedScope.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: SemaphoreExcubiaMsg::Check {
+            passerby: passerby,
+            merkle_tree_depth: 1,
+            merkle_tree_root: 0,
+            nullifier: 1,
+            message_value: 0,
+            scope: 0,
+            points: [1, 0, 0, 0, 0, 0, 0, 0],
+        },
+    )
+    assert(err == ExcubiaError::InvalidProof.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: SemaphoreExcubiaMsg::Check {
+            passerby: passerby,
+            merkle_tree_depth: 1,
+            merkle_tree_root: 0,
+            nullifier: 0,
+            message_value: 0,
+            scope: 0,
+            points: [0, 0, 0, 0, 0, 0, 0, 0],
+        },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: SemaphoreExcubiaMsg::HasPassedNullifier { nullifier: 0 },
+    )
+    assert(!has_passed)
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: SemaphoreExcubiaMsg::Pass {
+            passerby: passerby,
+            merkle_tree_depth: 1,
+            merkle_tree_root: 0,
+            nullifier: 0,
+            message_value: 0,
+            scope: 0,
+            points: [0, 0, 0, 0, 0, 0, 0, 0],
+        },
+    )
+    assert(err == ExcubiaError::GateOnly.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::SemaphorePass {
+            target: excubia,
+            passerby: passerby,
+            merkle_tree_depth: 1,
+            merkle_tree_root: 0,
+            nullifier: 0,
+            message_value: 0,
+            scope: 1,
+            points: [0, 0, 0, 0, 0, 0, 0, 0],
+        },
+    )
+    assert(err == ExcubiaError::UnexpectedScope.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::SemaphorePass {
+            target: excubia,
+            passerby: passerby,
+            merkle_tree_depth: 1,
+            merkle_tree_root: 0,
+            nullifier: 1,
+            message_value: 0,
+            scope: 0,
+            points: [1, 0, 0, 0, 0, 0, 0, 0],
+        },
+    )
+    assert(err == ExcubiaError::InvalidProof.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::SemaphorePass {
+            target: excubia,
+            passerby: passerby,
+            merkle_tree_depth: 1,
+            merkle_tree_root: 0,
+            nullifier: 0,
+            message_value: 0,
+            scope: 0,
+            points: [0, 0, 0, 0, 0, 0, 0, 0],
+        },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: SemaphoreExcubiaMsg::HasPassedNullifier { nullifier: 0 },
+    )
+    assert(has_passed)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::SemaphorePass {
+            target: excubia,
+            passerby: passerby,
+            merkle_tree_depth: 1,
+            merkle_tree_root: 0,
+            nullifier: 0,
+            message_value: 0,
+            scope: 0,
+            points: [0, 0, 0, 0, 0, 0, 0, 0],
+        },
+    )
+    assert(err == ExcubiaError::AlreadyPassed.code())
+}
+
 #[test(should_revert)]
 fn test_erc721_excubia_rejects_zero_nft_address() uses (evm: mut Evm) {
     let _ = evm.create2<ERC721Excubia>(value: 0, args: (Address::zero(),), salt: 2040)
@@ -5867,4 +6298,15 @@ fn test_eas_excubia_rejects_zero_attester() uses (evm: mut Evm) {
     let attester = Address { inner: 0x5002 }
     let eas = evm.create2<MockEAS>(value: 0, args: (passerby, attester, EAS_SCHEMA_ID), salt: 2054)
     let _ = evm.create2<EASExcubia>(value: 0, args: (eas, Address::zero(), EAS_SCHEMA_ID), salt: 2055)
+}
+
+#[test(should_revert)]
+fn test_semaphore_excubia_rejects_zero_semaphore_address() uses (evm: mut Evm) {
+    let _ = evm.create2<SemaphoreExcubia>(value: 0, args: (Address::zero(), 0), salt: 2063)
+}
+
+#[test(should_revert)]
+fn test_semaphore_excubia_rejects_invalid_group() uses (evm: mut Evm) {
+    let semaphore = evm.create2<MockSemaphore>(value: 0, args: (), salt: 2064)
+    let _ = evm.create2<SemaphoreExcubia>(value: 0, args: (semaphore, 1), salt: 2065)
 }
