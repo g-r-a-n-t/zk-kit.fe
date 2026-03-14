@@ -3263,6 +3263,39 @@ impl LazyIMTData {
     }
 }
 
+const LAZY_TEST_MAX_DENSE_LEAVES: usize = 8
+
+fn binary_root_from_dense_leaves(
+    depth: usize,
+    leaves: [u256; LAZY_TEST_MAX_DENSE_LEAVES],
+    leaf_count: usize,
+) -> u256 {
+    let mut tree = BinaryIMTData::empty()
+    let err = tree.init_with_default_zeroes(depth)
+    assert(err.code() == IMTError::None.code())
+
+    let mut i: usize = 0
+    while i < leaf_count {
+        let (_root, err) = tree.insert(leaves[i])
+        assert(err.code() == IMTError::None.code())
+        i += 1
+    }
+
+    tree.root
+}
+
+fn lazy_min_depth_for_leaf_count(leaf_count: usize) -> usize {
+    let mut depth: usize = 1
+    let mut bound: usize = 2
+
+    while bound < leaf_count {
+        bound = bound << 1
+        depth += 1
+    }
+
+    depth
+}
+
 fn lazy_calculate_root(
     leaf_index: usize,
     leaf: u256,
@@ -3596,6 +3629,111 @@ fn test_lazy_merkle_proof_element_2() {
     let (proof, err) = tree.merkle_proof_elements(4, 3)
     assert(err.code() == LazyIMTError::None.code())
     assert(proof[2] == hash2(hash2(1, 2), hash2(3, 4)))
+}
+
+#[test]
+fn test_lazy_insert_matches_binary_reference_across_depths() {
+    let depths: [usize; 3] = [1, 5, 10]
+    let insert_counts: [usize; 3] = [2, 4, 4]
+    let mut depth_idx: usize = 0
+
+    while depth_idx < 3 {
+        let depth = depths[depth_idx]
+        let target_insert_count = insert_counts[depth_idx]
+        let mut tree = LazyIMTData::empty()
+        let err = tree.init(depth)
+        assert(err.code() == LazyIMTError::None.code())
+
+        let mut leaves: [u256; LAZY_TEST_MAX_DENSE_LEAVES] = [0; LAZY_TEST_MAX_DENSE_LEAVES]
+        let mut leaf_count: usize = 0
+
+        while leaf_count < target_insert_count {
+            let leaf = (leaf_count + 1) as u256
+            leaves[leaf_count] = leaf
+            let err = tree.insert(leaf)
+            assert(err.code() == LazyIMTError::None.code())
+
+            let (root, err) = tree.root()
+            assert(err.code() == LazyIMTError::None.code())
+            assert(
+                root == binary_root_from_dense_leaves(
+                    lazy_min_depth_for_leaf_count(leaf_count + 1),
+                    leaves,
+                    leaf_count + 1,
+                ),
+            )
+
+            let (root_at_depth, err) = tree.root_at_depth(depth)
+            assert(err.code() == LazyIMTError::None.code())
+            assert(root_at_depth == binary_root_from_dense_leaves(depth, leaves, leaf_count + 1))
+
+            leaf_count += 1
+        }
+
+        depth_idx += 1
+    }
+}
+
+#[test]
+fn test_lazy_insert_matches_binary_reference_depth_32_boundary() {
+    let mut tree = LazyIMTData::empty()
+    let err = tree.init(32)
+    assert(err.code() == LazyIMTError::None.code())
+
+    let mut leaves: [u256; LAZY_TEST_MAX_DENSE_LEAVES] = [0; LAZY_TEST_MAX_DENSE_LEAVES]
+    leaves[0] = 1
+
+    let err = tree.insert(1)
+    assert(err.code() == LazyIMTError::None.code())
+
+    let (root_at_depth, err) = tree.root_at_depth(32)
+    assert(err.code() == LazyIMTError::None.code())
+    assert(root_at_depth == binary_root_from_dense_leaves(32, leaves, 1))
+}
+
+#[test]
+fn test_lazy_updates_match_binary_reference_across_depths() {
+    let depths: [usize; 3] = [2, 5, 10]
+    let mut depth_idx: usize = 0
+
+    while depth_idx < 3 {
+        let depth = depths[depth_idx]
+        let mut tree = LazyIMTData::empty()
+        let err = tree.init(depth)
+        assert(err.code() == LazyIMTError::None.code())
+
+        let mut leaves: [u256; LAZY_TEST_MAX_DENSE_LEAVES] = [0; LAZY_TEST_MAX_DENSE_LEAVES]
+        let mut i: usize = 0
+        while i < 4 {
+            let leaf = (i + 1) as u256
+            leaves[i] = leaf
+            let err = tree.insert(leaf)
+            assert(err.code() == LazyIMTError::None.code())
+            i += 1
+        }
+
+        let err = tree.update(11, 0)
+        assert(err.code() == LazyIMTError::None.code())
+        leaves[0] = 11
+        let (root, err) = tree.root()
+        assert(err.code() == LazyIMTError::None.code())
+        assert(root == binary_root_from_dense_leaves(2, leaves, 4))
+        let (root_at_depth, err) = tree.root_at_depth(depth)
+        assert(err.code() == LazyIMTError::None.code())
+        assert(root_at_depth == binary_root_from_dense_leaves(depth, leaves, 4))
+
+        let err = tree.update(22, 2)
+        assert(err.code() == LazyIMTError::None.code())
+        leaves[2] = 22
+        let (root, err) = tree.root()
+        assert(err.code() == LazyIMTError::None.code())
+        assert(root == binary_root_from_dense_leaves(2, leaves, 4))
+        let (root_at_depth, err) = tree.root_at_depth(depth)
+        assert(err.code() == LazyIMTError::None.code())
+        assert(root_at_depth == binary_root_from_dense_leaves(depth, leaves, 4))
+
+        depth_idx += 1
+    }
 }
 
 const LEAN_MAP_CAPACITY: usize = 256
