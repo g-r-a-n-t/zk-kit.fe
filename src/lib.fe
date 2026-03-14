@@ -3745,6 +3745,84 @@ impl LeanIMTData {
     }
 }
 
+const LEAN_TEST_MAX_LEAVES: usize = 16
+
+fn lean_root_from_slots(slots: [u256; LEAN_TEST_MAX_LEAVES], slot_count: usize) -> u256 {
+    if slot_count == 0 {
+        return 0
+    }
+
+    let mut current: [u256; LEAN_TEST_MAX_LEAVES] = slots
+    let mut current_count = slot_count
+
+    while current_count > 1 {
+        let mut next: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+        let mut next_count: usize = 0
+        let mut i: usize = 0
+
+        while i < current_count {
+            if i + 1 < current_count {
+                next[next_count] = hash2(current[i], current[i + 1])
+                i += 2
+            } else {
+                next[next_count] = current[i]
+                i += 1
+            }
+
+            next_count += 1
+        }
+
+        current = next
+        current_count = next_count
+    }
+
+    current[0]
+}
+
+fn lean_proof_from_slots(
+    slots: [u256; LEAN_TEST_MAX_LEAVES],
+    slot_count: usize,
+    target_index: usize,
+) -> ([u256; MAX_DEPTH], usize) {
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut sibling_count: usize = 0
+    let mut current: [u256; LEAN_TEST_MAX_LEAVES] = slots
+    let mut current_count = slot_count
+    let mut index = target_index
+
+    while current_count > 1 {
+        if index % 2 == 1 {
+            siblings[sibling_count] = current[index - 1]
+            sibling_count += 1
+        } else if index + 1 < current_count {
+            siblings[sibling_count] = current[index + 1]
+            sibling_count += 1
+        }
+
+        let mut next: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+        let mut next_count: usize = 0
+        let mut i: usize = 0
+
+        while i < current_count {
+            if i + 1 < current_count {
+                next[next_count] = hash2(current[i], current[i + 1])
+                i += 2
+            } else {
+                next[next_count] = current[i]
+                i += 1
+            }
+
+            next_count += 1
+        }
+
+        current = next
+        current_count = next_count
+        index /= 2
+    }
+
+    (siblings, sibling_count)
+}
+
 #[test]
 fn test_lean_insert_has_index_and_root() {
     let mut tree = LeanIMTData::empty()
@@ -3896,6 +3974,142 @@ fn test_lean_error_cases() {
 
     let (_idx, err) = tree.index_of(99)
     assert(err.code() == LeanIMTError::LeafDoesNotExist.code())
+}
+
+#[test]
+fn test_lean_update_single_leaf_and_rejects_field_sized_siblings() {
+    let mut tree = LeanIMTData::empty()
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let empty_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    let (_root, err) = tree.update(1, 2, empty_siblings, 0)
+    assert(err.code() == LeanIMTError::None.code())
+    assert(tree.root() == 2)
+
+    let mut even_tree = LeanIMTData::empty()
+    let (_root, err) = even_tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+    let (_root, err) = even_tree.insert(2)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let mut bad_even_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    bad_even_siblings[0] = SNARK_SCALAR_FIELD
+    let (_root, err) = even_tree.update(1, 3, bad_even_siblings, 1)
+    assert(
+        err.code() == LeanIMTError::LeafGreaterThanSnarkScalarField.code(),
+    )
+
+    let mut odd_tree = LeanIMTData::empty()
+    let (_root, err) = odd_tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+    let (_root, err) = odd_tree.insert(2)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let mut bad_odd_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    bad_odd_siblings[0] = SNARK_SCALAR_FIELD
+    let (_root, err) = odd_tree.update(2, 3, bad_odd_siblings, 1)
+    assert(
+        err.code() == LeanIMTError::LeafGreaterThanSnarkScalarField.code(),
+    )
+}
+
+#[test]
+fn test_lean_updates_track_reference_roots() {
+    let mut tree = LeanIMTData::empty()
+    let mut slots: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+    let slot_count = 6
+
+    let mut i: usize = 0
+    while i < slot_count {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == LeanIMTError::None.code())
+        i += 1
+    }
+    assert(tree.root() == lean_root_from_slots(slots, slot_count))
+
+    i = 0
+    while i < slot_count {
+        let old_leaf = slots[i]
+        let new_leaf = (i + 7) as u256
+        let (siblings, sibling_count) = lean_proof_from_slots(slots, slot_count, i)
+        let (_root, err) = tree.update(old_leaf, new_leaf, siblings, sibling_count)
+        assert(err.code() == LeanIMTError::None.code())
+        slots[i] = new_leaf
+        assert(tree.root() == lean_root_from_slots(slots, slot_count))
+        i += 1
+    }
+}
+
+#[test]
+fn test_lean_state_stays_consistent_after_updates_and_inserts() {
+    let mut tree = LeanIMTData::empty()
+    let mut slots: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+    let mut slot_count = 5
+
+    let mut i: usize = 0
+    while i < slot_count {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == LeanIMTError::None.code())
+        i += 1
+    }
+
+    i = 0
+    while i < 3 {
+        let old_leaf = slots[i]
+        let new_leaf = (i + 10) as u256
+        let (siblings, sibling_count) = lean_proof_from_slots(slots, slot_count, i)
+        let (_root, err) = tree.update(old_leaf, new_leaf, siblings, sibling_count)
+        assert(err.code() == LeanIMTError::None.code())
+        slots[i] = new_leaf
+        i += 1
+    }
+
+    i = 5
+    while i < 8 {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == LeanIMTError::None.code())
+        slot_count += 1
+        i += 1
+    }
+
+    assert(tree.root() == lean_root_from_slots(slots, slot_count))
+}
+
+#[test]
+fn test_lean_remove_many_tracks_reference_roots() {
+    let mut tree = LeanIMTData::empty()
+    let mut slots: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+    let slot_count = 10
+
+    let mut i: usize = 0
+    while i < slot_count {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == LeanIMTError::None.code())
+        i += 1
+    }
+    assert(tree.root() == lean_root_from_slots(slots, slot_count))
+
+    i = 0
+    while i < slot_count {
+        let old_leaf = slots[i]
+        let (siblings, sibling_count) = lean_proof_from_slots(slots, slot_count, i)
+        let (_root, err) = tree.remove(old_leaf, siblings, sibling_count)
+        assert(err.code() == LeanIMTError::None.code())
+        slots[i] = 0
+        assert(tree.root() == lean_root_from_slots(slots, slot_count))
+        i += 1
+    }
+
+    assert(!tree.has(0))
 }
 
 const LAZY_TOWER_HEIGHT: usize = 24
