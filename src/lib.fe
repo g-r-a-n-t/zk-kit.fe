@@ -1,3 +1,4 @@
+use std::evm::{Address, Call, Ctx, Evm, Log, StorageMap}
 use std::evm::effects::assert
 use std::evm::ops::{addmod, mulmod}
 
@@ -4337,4 +4338,1533 @@ fn test_lazytower_rejects_out_of_field_values() {
 
     let err = tower.add(SNARK_SCALAR_FIELD)
     assert(err.code() == LazyTowerError::ItemMustBeInField.code())
+}
+
+const EXCUBIA_TRAIT_FREE_FOR_ALL: u256 = 0x46726565466f72416c6c
+const EXCUBIA_TRAIT_ERC721: u256 = 0x455243373231
+const EXCUBIA_TRAIT_GITCOIN_PASSPORT: u256 = 0x476974636f696e50617373706f7274
+const EXCUBIA_TRAIT_HATS: u256 = 0x48617473
+const EXCUBIA_TRAIT_EAS: u256 = 0x454153
+const EXCUBIA_TRAIT_SEMAPHORE: u256 = 0x53656d6170686f7265
+const EXCUBIA_HAT_LIMIT: usize = 4
+const GITCOIN_SCORE_FACTOR: u256 = 100
+const EAS_SCHEMA_ID: u256 = 0xfdcfdad2dbe7489e0ce56b260348b7f14e8365a8a325aef9834818c00d46b31b
+
+enum ExcubiaError {
+    None,
+    OwnerOnly,
+    ZeroAddress,
+    GateOnly,
+    GateAlreadySet,
+    AlreadyPassed,
+    UnexpectedTokenOwner,
+    InsufficientScore,
+    NotWearingCriterionHat,
+    NotCriterionHat,
+    UnexpectedSchema,
+    UnexpectedAttester,
+    UnexpectedRecipient,
+    RevokedAttestation,
+    InvalidGroup,
+    InvalidProof,
+    UnexpectedScope,
+}
+
+impl ExcubiaError {
+    pub fn is_none(self) -> bool {
+        match self {
+            ExcubiaError::None => true,
+            _ => false,
+        }
+    }
+
+    pub fn code(self) -> u256 {
+        match self {
+            ExcubiaError::None => 0,
+            ExcubiaError::OwnerOnly => 1,
+            ExcubiaError::ZeroAddress => 2,
+            ExcubiaError::GateOnly => 3,
+            ExcubiaError::GateAlreadySet => 4,
+            ExcubiaError::AlreadyPassed => 5,
+            ExcubiaError::UnexpectedTokenOwner => 6,
+            ExcubiaError::InsufficientScore => 7,
+            ExcubiaError::NotWearingCriterionHat => 8,
+            ExcubiaError::NotCriterionHat => 9,
+            ExcubiaError::UnexpectedSchema => 10,
+            ExcubiaError::UnexpectedAttester => 11,
+            ExcubiaError::UnexpectedRecipient => 12,
+            ExcubiaError::RevokedAttestation => 13,
+            ExcubiaError::InvalidGroup => 14,
+            ExcubiaError::InvalidProof => 15,
+            ExcubiaError::UnexpectedScope => 16,
+        }
+    }
+}
+
+#[event]
+struct GateSetEvent {
+    #[indexed]
+    gate: Address,
+}
+
+#[event]
+struct GatePassedEvent {
+    #[indexed]
+    passerby: Address,
+    #[indexed]
+    gate: Address,
+}
+
+fn excubia_set_gate_err(owner: Address, gate: Address, caller: Address, new_gate: Address) -> ExcubiaError {
+    if caller != owner {
+        return ExcubiaError::OwnerOnly
+    }
+    if new_gate == Address::zero() {
+        return ExcubiaError::ZeroAddress
+    }
+    if gate != Address::zero() {
+        return ExcubiaError::GateAlreadySet
+    }
+    ExcubiaError::None
+}
+
+fn excubia_gate_only_err(gate: Address, caller: Address) -> ExcubiaError {
+    if caller != gate {
+        return ExcubiaError::GateOnly
+    }
+    ExcubiaError::None
+}
+
+fn emit_gate_set(gate: Address) uses (log: mut Log) {
+    log.emit(GateSetEvent { gate })
+}
+
+fn emit_gate_passed(passerby: Address, gate: Address) uses (log: mut Log) {
+    log.emit(GatePassedEvent { passerby, gate })
+}
+
+fn eas_attestation_err(
+    eas: Address,
+    attestation_id: u256,
+    schema: u256,
+    attester: Address,
+    passerby: Address,
+) -> ExcubiaError uses (call: mut Call) {
+    let actual_schema: u256 = call.call(
+        addr: eas,
+        gas: 100000,
+        value: 0,
+        message: MockEASMsg::GetSchema { uid: attestation_id },
+    )
+    if actual_schema != schema {
+        return ExcubiaError::UnexpectedSchema
+    }
+
+    let actual_attester: u256 = call.call(
+        addr: eas,
+        gas: 100000,
+        value: 0,
+        message: MockEASMsg::GetAttester { uid: attestation_id },
+    )
+    if actual_attester != attester.inner {
+        return ExcubiaError::UnexpectedAttester
+    }
+
+    let actual_recipient: u256 = call.call(
+        addr: eas,
+        gas: 100000,
+        value: 0,
+        message: MockEASMsg::GetRecipient { uid: attestation_id },
+    )
+    if actual_recipient != passerby.inner {
+        return ExcubiaError::UnexpectedRecipient
+    }
+
+    let revocation_time: u256 = call.call(
+        addr: eas,
+        gas: 100000,
+        value: 0,
+        message: MockEASMsg::GetRevocationTime { uid: attestation_id },
+    )
+    if revocation_time != 0 {
+        return ExcubiaError::RevokedAttestation
+    }
+
+    ExcubiaError::None
+}
+
+msg FreeForAllExcubiaMsg {
+    #[selector = 0x51000001]
+    SetGate { gate: Address } -> u256,
+    #[selector = 0x51000002]
+    Check { passerby: Address } -> u256,
+    #[selector = 0x51000003]
+    Pass { passerby: Address } -> u256,
+    #[selector = 0x51000004]
+    Gate -> u256,
+    #[selector = 0x51000005]
+    Trait -> u256,
+    #[selector = 0x51000006]
+    HasPassed { passerby: Address } -> bool,
+}
+
+struct FreeForAllExcubiaStore {
+    owner: Address,
+    gate: Address,
+    passed_passersby: StorageMap<Address, bool>,
+}
+
+pub contract FreeForAllExcubia uses (ctx: Ctx, log: mut Log) {
+    mut store: FreeForAllExcubiaStore
+
+    init() uses (mut store, ctx) {
+        store.owner = ctx.caller()
+        store.gate = Address::zero()
+    }
+
+    recv FreeForAllExcubiaMsg {
+        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
+            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
+            if err.is_none() {
+                store.gate = gate
+                emit_gate_set(gate: gate)
+            }
+            err.code()
+        }
+
+        Check { passerby } -> u256 {
+            let _ = passerby
+            ExcubiaError::None.code()
+        }
+
+        Pass { passerby } -> u256 uses (mut store, ctx, mut log) {
+            let err = excubia_gate_only_err(store.gate, ctx.caller())
+            if !err.is_none() {
+                return err.code()
+            }
+            if store.passed_passersby.get(key: passerby) {
+                return ExcubiaError::AlreadyPassed.code()
+            }
+
+            store.passed_passersby.set(key: passerby, value: true)
+            emit_gate_passed(passerby: passerby, gate: store.gate)
+            ExcubiaError::None.code()
+        }
+
+        Gate -> u256 uses (store) {
+            store.gate.inner
+        }
+
+        Trait -> u256 {
+            EXCUBIA_TRAIT_FREE_FOR_ALL
+        }
+
+        HasPassed { passerby } -> bool uses (store) {
+            store.passed_passersby.get(key: passerby)
+        }
+    }
+}
+
+msg MockERC721Msg {
+    #[selector = 0x52000001]
+    Mint { token_id: u256, owner: Address },
+    #[selector = 0x52000002]
+    OwnerOf { token_id: u256 } -> u256,
+}
+
+struct MockERC721Store {
+    owners: StorageMap<u256, u256>,
+}
+
+pub contract MockERC721 {
+    mut store: MockERC721Store
+
+    recv MockERC721Msg {
+        Mint { token_id, owner } uses (mut store) {
+            store.owners.set(key: token_id, value: owner.inner)
+        }
+
+        OwnerOf { token_id } -> u256 uses (store) {
+            store.owners.get(key: token_id)
+        }
+    }
+}
+
+msg ERC721ExcubiaMsg {
+    #[selector = 0x53000001]
+    SetGate { gate: Address } -> u256,
+    #[selector = 0x53000002]
+    Check { passerby: Address, token_id: u256 } -> u256,
+    #[selector = 0x53000003]
+    Pass { passerby: Address, token_id: u256 } -> u256,
+    #[selector = 0x53000004]
+    Gate -> u256,
+    #[selector = 0x53000005]
+    Trait -> u256,
+    #[selector = 0x53000006]
+    HasPassedTokenId { token_id: u256 } -> bool,
+}
+
+struct ERC721ExcubiaStore {
+    owner: Address,
+    gate: Address,
+    nft: Address,
+    passed_token_ids: StorageMap<u256, bool>,
+}
+
+pub contract ERC721Excubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut store: ERC721ExcubiaStore
+
+    init(nft: Address) uses (mut store, ctx) {
+        assert(nft != Address::zero())
+        store.owner = ctx.caller()
+        store.gate = Address::zero()
+        store.nft = nft
+    }
+
+    recv ERC721ExcubiaMsg {
+        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
+            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
+            if err.is_none() {
+                store.gate = gate
+                emit_gate_set(gate: gate)
+            }
+            err.code()
+        }
+
+        Check { passerby, token_id } -> u256 uses (store, mut call) {
+            let owner_inner: u256 = call.call(
+                addr: store.nft,
+                gas: 100000,
+                value: 0,
+                message: MockERC721Msg::OwnerOf { token_id: token_id },
+            )
+            if owner_inner != passerby.inner {
+                return ExcubiaError::UnexpectedTokenOwner.code()
+            }
+            ExcubiaError::None.code()
+        }
+
+        Pass { passerby, token_id } -> u256 uses (mut store, ctx, mut call, mut log) {
+            let err = excubia_gate_only_err(store.gate, ctx.caller())
+            if !err.is_none() {
+                return err.code()
+            }
+            if store.passed_token_ids.get(key: token_id) {
+                return ExcubiaError::AlreadyPassed.code()
+            }
+
+            let owner_inner: u256 = call.call(
+                addr: store.nft,
+                gas: 100000,
+                value: 0,
+                message: MockERC721Msg::OwnerOf { token_id: token_id },
+            )
+            if owner_inner != passerby.inner {
+                return ExcubiaError::UnexpectedTokenOwner.code()
+            }
+
+            store.passed_token_ids.set(key: token_id, value: true)
+            emit_gate_passed(passerby: passerby, gate: store.gate)
+            ExcubiaError::None.code()
+        }
+
+        Gate -> u256 uses (store) {
+            store.gate.inner
+        }
+
+        Trait -> u256 {
+            EXCUBIA_TRAIT_ERC721
+        }
+
+        HasPassedTokenId { token_id } -> bool uses (store) {
+            store.passed_token_ids.get(key: token_id)
+        }
+    }
+}
+
+msg MockGitcoinPassportDecoderMsg {
+    #[selector = 0x54000001]
+    SetScore { user: Address, score: u256 },
+    #[selector = 0x54000002]
+    GetScore { user: Address } -> u256,
+}
+
+struct MockGitcoinPassportDecoderStore {
+    scores: StorageMap<Address, u256>,
+}
+
+pub contract MockGitcoinPassportDecoder {
+    mut store: MockGitcoinPassportDecoderStore
+
+    recv MockGitcoinPassportDecoderMsg {
+        SetScore { user, score } uses (mut store) {
+            store.scores.set(key: user, value: score)
+        }
+
+        GetScore { user } -> u256 uses (store) {
+            store.scores.get(key: user)
+        }
+    }
+}
+
+msg GitcoinPassportExcubiaMsg {
+    #[selector = 0x55000001]
+    SetGate { gate: Address } -> u256,
+    #[selector = 0x55000002]
+    Check { passerby: Address } -> u256,
+    #[selector = 0x55000003]
+    Pass { passerby: Address } -> u256,
+    #[selector = 0x55000004]
+    Gate -> u256,
+    #[selector = 0x55000005]
+    Trait -> u256,
+    #[selector = 0x55000006]
+    HasPassed { passerby: Address } -> bool,
+}
+
+struct GitcoinPassportExcubiaStore {
+    owner: Address,
+    gate: Address,
+    decoder: Address,
+    threshold_score: u256,
+    passed_users: StorageMap<Address, bool>,
+}
+
+pub contract GitcoinPassportExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut store: GitcoinPassportExcubiaStore
+
+    init(decoder: Address, threshold_score: u256) uses (mut store, ctx) {
+        assert(decoder != Address::zero())
+        assert(threshold_score > 0)
+        store.owner = ctx.caller()
+        store.gate = Address::zero()
+        store.decoder = decoder
+        store.threshold_score = threshold_score
+    }
+
+    recv GitcoinPassportExcubiaMsg {
+        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
+            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
+            if err.is_none() {
+                store.gate = gate
+                emit_gate_set(gate: gate)
+            }
+            err.code()
+        }
+
+        Check { passerby } -> u256 uses (store, mut call) {
+            let score: u256 = call.call(
+                addr: store.decoder,
+                gas: 100000,
+                value: 0,
+                message: MockGitcoinPassportDecoderMsg::GetScore { user: passerby },
+            )
+            if (score / GITCOIN_SCORE_FACTOR) < store.threshold_score {
+                return ExcubiaError::InsufficientScore.code()
+            }
+            ExcubiaError::None.code()
+        }
+
+        Pass { passerby } -> u256 uses (mut store, ctx, mut call, mut log) {
+            let err = excubia_gate_only_err(store.gate, ctx.caller())
+            if !err.is_none() {
+                return err.code()
+            }
+            if store.passed_users.get(key: passerby) {
+                return ExcubiaError::AlreadyPassed.code()
+            }
+
+            let score: u256 = call.call(
+                addr: store.decoder,
+                gas: 100000,
+                value: 0,
+                message: MockGitcoinPassportDecoderMsg::GetScore { user: passerby },
+            )
+            if (score / GITCOIN_SCORE_FACTOR) < store.threshold_score {
+                return ExcubiaError::InsufficientScore.code()
+            }
+
+            store.passed_users.set(key: passerby, value: true)
+            emit_gate_passed(passerby: passerby, gate: store.gate)
+            ExcubiaError::None.code()
+        }
+
+        Gate -> u256 uses (store) {
+            store.gate.inner
+        }
+
+        Trait -> u256 {
+            EXCUBIA_TRAIT_GITCOIN_PASSPORT
+        }
+
+        HasPassed { passerby } -> bool uses (store) {
+            store.passed_users.get(key: passerby)
+        }
+    }
+}
+
+msg MockHatsMsg {
+    #[selector = 0x56000001]
+    SetWearer { user: Address, hat: u256, is_wearer: bool },
+    #[selector = 0x56000002]
+    IsWearerOfHat { user: Address, hat: u256 } -> bool,
+}
+
+struct MockHatsStore {
+    wearers: StorageMap<(Address, u256), bool>,
+}
+
+pub contract MockHats {
+    mut store: MockHatsStore
+
+    recv MockHatsMsg {
+        SetWearer { user, hat, is_wearer } uses (mut store) {
+            store.wearers.set(key: (user, hat), value: is_wearer)
+        }
+
+        IsWearerOfHat { user, hat } -> bool uses (store) {
+            store.wearers.get(key: (user, hat))
+        }
+    }
+}
+
+msg HatsExcubiaMsg {
+    #[selector = 0x57000001]
+    SetGate { gate: Address } -> u256,
+    #[selector = 0x57000002]
+    Check { passerby: Address, hat: u256 } -> u256,
+    #[selector = 0x57000003]
+    Pass { passerby: Address, hat: u256 } -> u256,
+    #[selector = 0x57000004]
+    Gate -> u256,
+    #[selector = 0x57000005]
+    Trait -> u256,
+    #[selector = 0x57000006]
+    HasPassed { passerby: Address } -> bool,
+    #[selector = 0x57000007]
+    IsCriterionHat { hat: u256 } -> bool,
+}
+
+struct HatsExcubiaStore {
+    owner: Address,
+    gate: Address,
+    hats: Address,
+    criterion_hats: StorageMap<u256, bool>,
+    passed_users: StorageMap<Address, bool>,
+}
+
+pub contract HatsExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut store: HatsExcubiaStore
+
+    init(hats: Address, criterion_hats: [u256; EXCUBIA_HAT_LIMIT], count: usize) uses (mut store, ctx) {
+        assert(hats != Address::zero())
+        assert(count > 0)
+        assert(count <= EXCUBIA_HAT_LIMIT)
+
+        store.owner = ctx.caller()
+        store.gate = Address::zero()
+        store.hats = hats
+
+        let mut i: usize = 0
+        while i < count {
+            store.criterion_hats.set(key: criterion_hats[i], value: true)
+            i += 1
+        }
+    }
+
+    recv HatsExcubiaMsg {
+        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
+            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
+            if err.is_none() {
+                store.gate = gate
+                emit_gate_set(gate: gate)
+            }
+            err.code()
+        }
+
+        Check { passerby, hat } -> u256 uses (store, mut call) {
+            if !store.criterion_hats.get(key: hat) {
+                return ExcubiaError::NotCriterionHat.code()
+            }
+
+            let is_wearer: bool = call.call(
+                addr: store.hats,
+                gas: 100000,
+                value: 0,
+                message: MockHatsMsg::IsWearerOfHat { user: passerby, hat: hat },
+            )
+            if !is_wearer {
+                return ExcubiaError::NotWearingCriterionHat.code()
+            }
+            ExcubiaError::None.code()
+        }
+
+        Pass { passerby, hat } -> u256 uses (mut store, ctx, mut call, mut log) {
+            let err = excubia_gate_only_err(store.gate, ctx.caller())
+            if !err.is_none() {
+                return err.code()
+            }
+            if store.passed_users.get(key: passerby) {
+                return ExcubiaError::AlreadyPassed.code()
+            }
+            if !store.criterion_hats.get(key: hat) {
+                return ExcubiaError::NotCriterionHat.code()
+            }
+
+            let is_wearer: bool = call.call(
+                addr: store.hats,
+                gas: 100000,
+                value: 0,
+                message: MockHatsMsg::IsWearerOfHat { user: passerby, hat: hat },
+            )
+            if !is_wearer {
+                return ExcubiaError::NotWearingCriterionHat.code()
+            }
+
+            store.passed_users.set(key: passerby, value: true)
+            emit_gate_passed(passerby: passerby, gate: store.gate)
+            ExcubiaError::None.code()
+        }
+
+        Gate -> u256 uses (store) {
+            store.gate.inner
+        }
+
+        Trait -> u256 {
+            EXCUBIA_TRAIT_HATS
+        }
+
+        HasPassed { passerby } -> bool uses (store) {
+            store.passed_users.get(key: passerby)
+        }
+
+        IsCriterionHat { hat } -> bool uses (store) {
+            store.criterion_hats.get(key: hat)
+        }
+    }
+}
+
+msg MockEASMsg {
+    #[selector = 0x59000001]
+    GetSchema { uid: u256 } -> u256,
+    #[selector = 0x59000002]
+    GetRecipient { uid: u256 } -> u256,
+    #[selector = 0x59000003]
+    GetAttester { uid: u256 } -> u256,
+    #[selector = 0x59000004]
+    GetRevocationTime { uid: u256 } -> u256,
+}
+
+struct MockEASStore {
+    schemas: StorageMap<u256, u256>,
+    recipients: StorageMap<u256, u256>,
+    attesters: StorageMap<u256, u256>,
+    revocation_times: StorageMap<u256, u256>,
+}
+
+pub contract MockEAS {
+    mut store: MockEASStore
+
+    init(recipient: Address, attester: Address, schema: u256) uses (mut store) {
+        store.schemas.set(key: 1, value: schema)
+        store.recipients.set(key: 1, value: recipient.inner)
+        store.attesters.set(key: 1, value: attester.inner)
+        store.revocation_times.set(key: 1, value: 0)
+
+        store.schemas.set(key: 2, value: schema)
+        store.recipients.set(key: 2, value: recipient.inner)
+        store.attesters.set(key: 2, value: attester.inner)
+        store.revocation_times.set(key: 2, value: 1)
+
+        store.schemas.set(key: 3, value: 1)
+        store.recipients.set(key: 3, value: recipient.inner)
+        store.attesters.set(key: 3, value: attester.inner)
+        store.revocation_times.set(key: 3, value: 0)
+
+        store.schemas.set(key: 4, value: schema)
+        store.recipients.set(key: 4, value: 1)
+        store.attesters.set(key: 4, value: attester.inner)
+        store.revocation_times.set(key: 4, value: 0)
+
+        store.schemas.set(key: 5, value: schema)
+        store.recipients.set(key: 5, value: recipient.inner)
+        store.attesters.set(key: 5, value: 1)
+        store.revocation_times.set(key: 5, value: 0)
+    }
+
+    recv MockEASMsg {
+        GetSchema { uid } -> u256 uses (store) {
+            store.schemas.get(key: uid)
+        }
+
+        GetRecipient { uid } -> u256 uses (store) {
+            store.recipients.get(key: uid)
+        }
+
+        GetAttester { uid } -> u256 uses (store) {
+            store.attesters.get(key: uid)
+        }
+
+        GetRevocationTime { uid } -> u256 uses (store) {
+            store.revocation_times.get(key: uid)
+        }
+    }
+}
+
+msg EASExcubiaMsg {
+    #[selector = 0x5a000001]
+    SetGate { gate: Address } -> u256,
+    #[selector = 0x5a000002]
+    Check { passerby: Address, attestation_id: u256 } -> u256,
+    #[selector = 0x5a000003]
+    Pass { passerby: Address, attestation_id: u256 } -> u256,
+    #[selector = 0x5a000004]
+    Gate -> u256,
+    #[selector = 0x5a000005]
+    Trait -> u256,
+    #[selector = 0x5a000006]
+    HasPassedAttestation { attestation_id: u256 } -> bool,
+}
+
+struct EASExcubiaStore {
+    owner: Address,
+    gate: Address,
+    eas: Address,
+    schema: u256,
+    attester: Address,
+    passed_attestations: StorageMap<u256, bool>,
+}
+
+pub contract EASExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut store: EASExcubiaStore
+
+    init(eas: Address, attester: Address, schema: u256) uses (mut store, ctx) {
+        assert(eas != Address::zero())
+        assert(attester != Address::zero())
+        store.owner = ctx.caller()
+        store.gate = Address::zero()
+        store.eas = eas
+        store.schema = schema
+        store.attester = attester
+    }
+
+    recv EASExcubiaMsg {
+        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
+            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
+            if err.is_none() {
+                store.gate = gate
+                emit_gate_set(gate: gate)
+            }
+            err.code()
+        }
+
+        Check { passerby, attestation_id } -> u256 uses (store, mut call) {
+            eas_attestation_err(
+                eas: store.eas,
+                attestation_id: attestation_id,
+                schema: store.schema,
+                attester: store.attester,
+                passerby: passerby,
+            )
+            .code()
+        }
+
+        Pass { passerby, attestation_id } -> u256 uses (mut store, ctx, mut call, mut log) {
+            let err = excubia_gate_only_err(store.gate, ctx.caller())
+            if !err.is_none() {
+                return err.code()
+            }
+            if store.passed_attestations.get(key: attestation_id) {
+                return ExcubiaError::AlreadyPassed.code()
+            }
+
+            let err = eas_attestation_err(
+                eas: store.eas,
+                attestation_id: attestation_id,
+                schema: store.schema,
+                attester: store.attester,
+                passerby: passerby,
+            )
+            if !err.is_none() {
+                return err.code()
+            }
+
+            store.passed_attestations.set(key: attestation_id, value: true)
+            emit_gate_passed(passerby: passerby, gate: store.gate)
+            ExcubiaError::None.code()
+        }
+
+        Gate -> u256 uses (store) {
+            store.gate.inner
+        }
+
+        Trait -> u256 {
+            EXCUBIA_TRAIT_EAS
+        }
+
+        HasPassedAttestation { attestation_id } -> bool uses (store) {
+            store.passed_attestations.get(key: attestation_id)
+        }
+    }
+}
+
+msg ExcubiaCallerMsg {
+    #[selector = 0x58000001]
+    FreeForAllSetGate { target: Address, gate: Address } -> u256,
+    #[selector = 0x58000002]
+    FreeForAllPass { target: Address, passerby: Address } -> u256,
+    #[selector = 0x58000003]
+    ERC721SetGate { target: Address, gate: Address } -> u256,
+    #[selector = 0x58000004]
+    ERC721Pass { target: Address, passerby: Address, token_id: u256 } -> u256,
+    #[selector = 0x58000005]
+    GitcoinSetGate { target: Address, gate: Address } -> u256,
+    #[selector = 0x58000006]
+    GitcoinPass { target: Address, passerby: Address } -> u256,
+    #[selector = 0x58000007]
+    HatsSetGate { target: Address, gate: Address } -> u256,
+    #[selector = 0x58000008]
+    HatsPass { target: Address, passerby: Address, hat: u256 } -> u256,
+    #[selector = 0x58000009]
+    EASSetGate { target: Address, gate: Address } -> u256,
+    #[selector = 0x5800000a]
+    EASPass { target: Address, passerby: Address, attestation_id: u256 } -> u256,
+}
+
+pub contract ExcubiaCaller uses (call: mut Call) {
+    recv ExcubiaCallerMsg {
+        FreeForAllSetGate { target, gate } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: FreeForAllExcubiaMsg::SetGate { gate: gate },
+            )
+        }
+
+        FreeForAllPass { target, passerby } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: FreeForAllExcubiaMsg::Pass { passerby: passerby },
+            )
+        }
+
+        ERC721SetGate { target, gate } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: ERC721ExcubiaMsg::SetGate { gate: gate },
+            )
+        }
+
+        ERC721Pass { target, passerby, token_id } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: ERC721ExcubiaMsg::Pass { passerby: passerby, token_id: token_id },
+            )
+        }
+
+        GitcoinSetGate { target, gate } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: GitcoinPassportExcubiaMsg::SetGate { gate: gate },
+            )
+        }
+
+        GitcoinPass { target, passerby } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: GitcoinPassportExcubiaMsg::Pass { passerby: passerby },
+            )
+        }
+
+        HatsSetGate { target, gate } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: HatsExcubiaMsg::SetGate { gate: gate },
+            )
+        }
+
+        HatsPass { target, passerby, hat } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: HatsExcubiaMsg::Pass { passerby: passerby, hat: hat },
+            )
+        }
+
+        EASSetGate { target, gate } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: EASExcubiaMsg::SetGate { gate: gate },
+            )
+        }
+
+        EASPass { target, passerby, attestation_id } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: EASExcubiaMsg::Pass { passerby: passerby, attestation_id: attestation_id },
+            )
+        }
+    }
+}
+
+#[test]
+fn test_free_for_all_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
+    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2000)
+    let excubia = evm.create2<FreeForAllExcubia>(value: 0, args: (), salt: 2001)
+    let passerby = Address { inner: 0x1001 }
+
+    let trait_value: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: FreeForAllExcubiaMsg::Trait {},
+    )
+    assert(trait_value == EXCUBIA_TRAIT_FREE_FOR_ALL)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::FreeForAllSetGate { target: excubia, gate: caller },
+    )
+    assert(err == ExcubiaError::OwnerOnly.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: FreeForAllExcubiaMsg::SetGate { gate: Address::zero() },
+    )
+    assert(err == ExcubiaError::ZeroAddress.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: FreeForAllExcubiaMsg::SetGate { gate: caller },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let gate_inner: u256 = evm.call(addr: excubia, gas: 100000, value: 0, message: FreeForAllExcubiaMsg::Gate {})
+    assert(gate_inner == caller.inner)
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: FreeForAllExcubiaMsg::SetGate { gate: passerby },
+    )
+    assert(err == ExcubiaError::GateAlreadySet.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: FreeForAllExcubiaMsg::Check { passerby: passerby },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: FreeForAllExcubiaMsg::HasPassed { passerby: passerby },
+    )
+    assert(!has_passed)
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: FreeForAllExcubiaMsg::Pass { passerby: passerby },
+    )
+    assert(err == ExcubiaError::GateOnly.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::FreeForAllPass { target: excubia, passerby: passerby },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: FreeForAllExcubiaMsg::HasPassed { passerby: passerby },
+    )
+    assert(has_passed)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::FreeForAllPass { target: excubia, passerby: passerby },
+    )
+    assert(err == ExcubiaError::AlreadyPassed.code())
+}
+
+#[test]
+fn test_erc721_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
+    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2010)
+    let nft = evm.create2<MockERC721>(value: 0, args: (), salt: 2011)
+    let excubia = evm.create2<ERC721Excubia>(value: 0, args: (nft,), salt: 2012)
+    let passerby = Address { inner: 0x2001 }
+    let other = Address { inner: 0x2002 }
+
+    evm.call(addr: nft, gas: 100000, value: 0, message: MockERC721Msg::Mint { token_id: 0, owner: passerby })
+    evm.call(addr: nft, gas: 100000, value: 0, message: MockERC721Msg::Mint { token_id: 1, owner: other })
+
+    let trait_value: u256 = evm.call(addr: excubia, gas: 100000, value: 0, message: ERC721ExcubiaMsg::Trait {})
+    assert(trait_value == EXCUBIA_TRAIT_ERC721)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::ERC721SetGate { target: excubia, gate: caller },
+    )
+    assert(err == ExcubiaError::OwnerOnly.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: ERC721ExcubiaMsg::SetGate { gate: Address::zero() },
+    )
+    assert(err == ExcubiaError::ZeroAddress.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: ERC721ExcubiaMsg::SetGate { gate: caller },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: ERC721ExcubiaMsg::Check { passerby: passerby, token_id: 1 },
+    )
+    assert(err == ExcubiaError::UnexpectedTokenOwner.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: ERC721ExcubiaMsg::Check { passerby: passerby, token_id: 0 },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: ERC721ExcubiaMsg::HasPassedTokenId { token_id: 0 },
+    )
+    assert(!has_passed)
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: ERC721ExcubiaMsg::Pass { passerby: passerby, token_id: 0 },
+    )
+    assert(err == ExcubiaError::GateOnly.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::ERC721Pass { target: excubia, passerby: passerby, token_id: 1 },
+    )
+    assert(err == ExcubiaError::UnexpectedTokenOwner.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::ERC721Pass { target: excubia, passerby: passerby, token_id: 0 },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: ERC721ExcubiaMsg::HasPassedTokenId { token_id: 0 },
+    )
+    assert(has_passed)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::ERC721Pass { target: excubia, passerby: passerby, token_id: 0 },
+    )
+    assert(err == ExcubiaError::AlreadyPassed.code())
+}
+
+#[test]
+fn test_gitcoin_passport_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
+    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2020)
+    let decoder = evm.create2<MockGitcoinPassportDecoder>(value: 0, args: (), salt: 2021)
+    let excubia = evm.create2<GitcoinPassportExcubia>(value: 0, args: (decoder, 35), salt: 2022)
+    let passerby = Address { inner: 0x3001 }
+    let low_score = Address { inner: 0x3002 }
+
+    evm.call(
+        addr: decoder,
+        gas: 100000,
+        value: 0,
+        message: MockGitcoinPassportDecoderMsg::SetScore { user: passerby, score: 5000 },
+    )
+    evm.call(
+        addr: decoder,
+        gas: 100000,
+        value: 0,
+        message: MockGitcoinPassportDecoderMsg::SetScore { user: low_score, score: 1000 },
+    )
+
+    let trait_value: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: GitcoinPassportExcubiaMsg::Trait {},
+    )
+    assert(trait_value == EXCUBIA_TRAIT_GITCOIN_PASSPORT)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::GitcoinSetGate { target: excubia, gate: caller },
+    )
+    assert(err == ExcubiaError::OwnerOnly.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: GitcoinPassportExcubiaMsg::SetGate { gate: Address::zero() },
+    )
+    assert(err == ExcubiaError::ZeroAddress.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: GitcoinPassportExcubiaMsg::SetGate { gate: caller },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: GitcoinPassportExcubiaMsg::Check { passerby: low_score },
+    )
+    assert(err == ExcubiaError::InsufficientScore.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: GitcoinPassportExcubiaMsg::Check { passerby: passerby },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: GitcoinPassportExcubiaMsg::HasPassed { passerby: passerby },
+    )
+    assert(!has_passed)
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: GitcoinPassportExcubiaMsg::Pass { passerby: passerby },
+    )
+    assert(err == ExcubiaError::GateOnly.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::GitcoinPass { target: excubia, passerby: low_score },
+    )
+    assert(err == ExcubiaError::InsufficientScore.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::GitcoinPass { target: excubia, passerby: passerby },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: GitcoinPassportExcubiaMsg::HasPassed { passerby: passerby },
+    )
+    assert(has_passed)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::GitcoinPass { target: excubia, passerby: passerby },
+    )
+    assert(err == ExcubiaError::AlreadyPassed.code())
+}
+
+#[test]
+fn test_hats_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
+    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2030)
+    let hats = evm.create2<MockHats>(value: 0, args: (), salt: 2031)
+    let excubia = evm.create2<HatsExcubia>(value: 0, args: (hats, [1, 0, 0, 0], 1), salt: 2032)
+    let passerby = Address { inner: 0x4001 }
+    let not_wearer = Address { inner: 0x4002 }
+
+    evm.call(
+        addr: hats,
+        gas: 100000,
+        value: 0,
+        message: MockHatsMsg::SetWearer { user: passerby, hat: 1, is_wearer: true },
+    )
+
+    let trait_value: u256 = evm.call(addr: excubia, gas: 100000, value: 0, message: HatsExcubiaMsg::Trait {})
+    assert(trait_value == EXCUBIA_TRAIT_HATS)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::HatsSetGate { target: excubia, gate: caller },
+    )
+    assert(err == ExcubiaError::OwnerOnly.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: HatsExcubiaMsg::SetGate { gate: Address::zero() },
+    )
+    assert(err == ExcubiaError::ZeroAddress.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: HatsExcubiaMsg::SetGate { gate: caller },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: HatsExcubiaMsg::Check { passerby: passerby, hat: 2 },
+    )
+    assert(err == ExcubiaError::NotCriterionHat.code())
+
+    let is_criterion: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: HatsExcubiaMsg::IsCriterionHat { hat: 2 },
+    )
+    assert(!is_criterion)
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: HatsExcubiaMsg::Check { passerby: not_wearer, hat: 1 },
+    )
+    assert(err == ExcubiaError::NotWearingCriterionHat.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: HatsExcubiaMsg::Check { passerby: passerby, hat: 1 },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: HatsExcubiaMsg::HasPassed { passerby: passerby },
+    )
+    assert(!has_passed)
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: HatsExcubiaMsg::Pass { passerby: passerby, hat: 1 },
+    )
+    assert(err == ExcubiaError::GateOnly.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::HatsPass { target: excubia, passerby: passerby, hat: 2 },
+    )
+    assert(err == ExcubiaError::NotCriterionHat.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::HatsPass { target: excubia, passerby: not_wearer, hat: 1 },
+    )
+    assert(err == ExcubiaError::NotWearingCriterionHat.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::HatsPass { target: excubia, passerby: passerby, hat: 1 },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: HatsExcubiaMsg::HasPassed { passerby: passerby },
+    )
+    assert(has_passed)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::HatsPass { target: excubia, passerby: passerby, hat: 1 },
+    )
+    assert(err == ExcubiaError::AlreadyPassed.code())
+}
+
+#[test]
+fn test_eas_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
+    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2050)
+    let passerby = Address { inner: 0x5001 }
+    let attester = Address { inner: 0x5002 }
+    let eas = evm.create2<MockEAS>(value: 0, args: (passerby, attester, EAS_SCHEMA_ID), salt: 2051)
+    let excubia = evm.create2<EASExcubia>(value: 0, args: (eas, attester, EAS_SCHEMA_ID), salt: 2052)
+
+    let trait_value: u256 = evm.call(addr: excubia, gas: 100000, value: 0, message: EASExcubiaMsg::Trait {})
+    assert(trait_value == EXCUBIA_TRAIT_EAS)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::EASSetGate { target: excubia, gate: caller },
+    )
+    assert(err == ExcubiaError::OwnerOnly.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: EASExcubiaMsg::SetGate { gate: Address::zero() },
+    )
+    assert(err == ExcubiaError::ZeroAddress.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: EASExcubiaMsg::SetGate { gate: caller },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: EASExcubiaMsg::Check { passerby: passerby, attestation_id: 4 },
+    )
+    assert(err == ExcubiaError::UnexpectedRecipient.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: EASExcubiaMsg::Check { passerby: passerby, attestation_id: 2 },
+    )
+    assert(err == ExcubiaError::RevokedAttestation.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: EASExcubiaMsg::Check { passerby: passerby, attestation_id: 3 },
+    )
+    assert(err == ExcubiaError::UnexpectedSchema.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: EASExcubiaMsg::Check { passerby: passerby, attestation_id: 5 },
+    )
+    assert(err == ExcubiaError::UnexpectedAttester.code())
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: EASExcubiaMsg::Check { passerby: passerby, attestation_id: 1 },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: EASExcubiaMsg::HasPassedAttestation { attestation_id: 1 },
+    )
+    assert(!has_passed)
+
+    let err: u256 = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: EASExcubiaMsg::Pass { passerby: passerby, attestation_id: 1 },
+    )
+    assert(err == ExcubiaError::GateOnly.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 4 },
+    )
+    assert(err == ExcubiaError::UnexpectedRecipient.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 2 },
+    )
+    assert(err == ExcubiaError::RevokedAttestation.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 3 },
+    )
+    assert(err == ExcubiaError::UnexpectedSchema.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 5 },
+    )
+    assert(err == ExcubiaError::UnexpectedAttester.code())
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 1 },
+    )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm.call(
+        addr: excubia,
+        gas: 100000,
+        value: 0,
+        message: EASExcubiaMsg::HasPassedAttestation { attestation_id: 1 },
+    )
+    assert(has_passed)
+
+    let err: u256 = evm.call(
+        addr: caller,
+        gas: 200000,
+        value: 0,
+        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 1 },
+    )
+    assert(err == ExcubiaError::AlreadyPassed.code())
+}
+
+#[test(should_revert)]
+fn test_erc721_excubia_rejects_zero_nft_address() uses (evm: mut Evm) {
+    let _ = evm.create2<ERC721Excubia>(value: 0, args: (Address::zero(),), salt: 2040)
+}
+
+#[test(should_revert)]
+fn test_gitcoin_passport_excubia_rejects_zero_decoder() uses (evm: mut Evm) {
+    let _ = evm.create2<GitcoinPassportExcubia>(value: 0, args: (Address::zero(), 35), salt: 2041)
+}
+
+#[test(should_revert)]
+fn test_gitcoin_passport_excubia_rejects_zero_threshold() uses (evm: mut Evm) {
+    let decoder = evm.create2<MockGitcoinPassportDecoder>(value: 0, args: (), salt: 2042)
+    let _ = evm.create2<GitcoinPassportExcubia>(value: 0, args: (decoder, 0), salt: 2043)
+}
+
+#[test(should_revert)]
+fn test_hats_excubia_rejects_zero_hats_address() uses (evm: mut Evm) {
+    let _ = evm.create2<HatsExcubia>(
+        value: 0,
+        args: (Address::zero(), [1, 0, 0, 0], 1),
+        salt: 2044,
+    )
+}
+
+#[test(should_revert)]
+fn test_hats_excubia_rejects_zero_criterion_hats() uses (evm: mut Evm) {
+    let hats = evm.create2<MockHats>(value: 0, args: (), salt: 2045)
+    let _ = evm.create2<HatsExcubia>(value: 0, args: (hats, [0, 0, 0, 0], 0), salt: 2046)
+}
+
+#[test(should_revert)]
+fn test_eas_excubia_rejects_zero_eas_address() uses (evm: mut Evm) {
+    let attester = Address { inner: 0x5002 }
+    let _ = evm.create2<EASExcubia>(value: 0, args: (Address::zero(), attester, EAS_SCHEMA_ID), salt: 2053)
+}
+
+#[test(should_revert)]
+fn test_eas_excubia_rejects_zero_attester() uses (evm: mut Evm) {
+    let passerby = Address { inner: 0x5001 }
+    let attester = Address { inner: 0x5002 }
+    let eas = evm.create2<MockEAS>(value: 0, args: (passerby, attester, EAS_SCHEMA_ID), salt: 2054)
+    let _ = evm.create2<EASExcubia>(value: 0, args: (eas, Address::zero(), EAS_SCHEMA_ID), salt: 2055)
 }
