@@ -2505,6 +2505,86 @@ impl QuinaryIMTData {
     }
 }
 
+const QUINARY_TEST_MAX_LEAVES: usize = 25
+
+fn quinary_test_root(slots: [u256; QUINARY_TEST_MAX_LEAVES]) -> u256 {
+    let mut current: [u256; QUINARY_TEST_MAX_LEAVES] = slots
+    let mut current_count = QUINARY_TEST_MAX_LEAVES
+
+    while current_count > 1 {
+        let mut next: [u256; QUINARY_TEST_MAX_LEAVES] = [0; QUINARY_TEST_MAX_LEAVES]
+        let mut next_count: usize = 0
+        let mut i: usize = 0
+
+        while i < current_count {
+            next[next_count] = hash5(
+                current[i],
+                current[i + 1],
+                current[i + 2],
+                current[i + 3],
+                current[i + 4],
+            )
+            next_count += 1
+            i += 5
+        }
+
+        current = next
+        current_count = next_count
+    }
+
+    current[0]
+}
+
+fn quinary_test_proof(
+    slots: [u256; QUINARY_TEST_MAX_LEAVES],
+    target_index: usize,
+) -> ([u256; QUINARY_SIBLINGS_LEN], [u8; MAX_DEPTH]) {
+    let mut siblings: [u256; QUINARY_SIBLINGS_LEN] = [0; QUINARY_SIBLINGS_LEN]
+    let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut current: [u256; QUINARY_TEST_MAX_LEAVES] = slots
+    let mut current_count = QUINARY_TEST_MAX_LEAVES
+    let mut index = target_index
+    let mut level: usize = 0
+
+    while current_count > 1 {
+        let path = index % QUINARY_ARITY
+        indices[level] = path.downcast_unchecked()
+
+        let group_start = (index / QUINARY_ARITY) * QUINARY_ARITY
+        let mut sibling_pos: usize = 0
+        let mut j: usize = 0
+        while j < QUINARY_ARITY {
+            if j != path {
+                siblings[quinary_sibling_slot(level, sibling_pos)] = current[group_start + j]
+                sibling_pos += 1
+            }
+            j += 1
+        }
+
+        let mut next: [u256; QUINARY_TEST_MAX_LEAVES] = [0; QUINARY_TEST_MAX_LEAVES]
+        let mut next_count: usize = 0
+        let mut i: usize = 0
+        while i < current_count {
+            next[next_count] = hash5(
+                current[i],
+                current[i + 1],
+                current[i + 2],
+                current[i + 3],
+                current[i + 4],
+            )
+            next_count += 1
+            i += 5
+        }
+
+        current = next
+        current_count = next_count
+        index /= QUINARY_ARITY
+        level += 1
+    }
+
+    (siblings, indices)
+}
+
 #[test]
 fn test_quinary_init_and_tree_full() {
     let mut tree = QuinaryIMTData::empty()
@@ -2738,6 +2818,52 @@ fn test_quinary_insert_after_remove_preserves_holes() {
     let (ok, err) = tree.verify(2, siblings, indices)
     assert(err.code() == IMTError::None.code())
     assert(ok)
+}
+
+#[test]
+fn test_quinary_insert_six_leaves_matches_reference_root() {
+    let mut tree = QuinaryIMTData::empty()
+    let err = tree.init(2, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let mut slots: [u256; QUINARY_TEST_MAX_LEAVES] = [0; QUINARY_TEST_MAX_LEAVES]
+    let mut i: usize = 0
+    while i < 6 {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == IMTError::None.code())
+        assert(tree.root == quinary_test_root(slots))
+        i += 1
+    }
+}
+
+#[test]
+fn test_quinary_remove_inserted_leaves_matches_reference_root() {
+    let mut tree = QuinaryIMTData::empty()
+    let err = tree.init(2, 0)
+    assert(err.code() == IMTError::None.code())
+
+    let mut slots: [u256; QUINARY_TEST_MAX_LEAVES] = [0; QUINARY_TEST_MAX_LEAVES]
+    let mut i: usize = 0
+    while i < 4 {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == IMTError::None.code())
+        i += 1
+    }
+
+    i = 0
+    while i < 4 {
+        let leaf = slots[i]
+        let (siblings, indices) = quinary_test_proof(slots, i)
+        let err = tree.remove(leaf, siblings, indices)
+        assert(err.code() == IMTError::None.code())
+        slots[i] = 0
+        assert(tree.root == quinary_test_root(slots))
+        i += 1
+    }
 }
 
 const MAX_DEPTH_PLUS_ONE: usize = MAX_DEPTH + 1
