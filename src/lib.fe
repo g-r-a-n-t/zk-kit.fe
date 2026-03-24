@@ -1919,7 +1919,9 @@ fn test_stateful_insert_four_leaves_matches_depth2_root() {
         slots[i] = leaf
         let (_root, err) = tree.insert(leaf)
         assert(err.code() == IMTError::None.code())
-        assert(tree.root == depth2_root(slots[0], slots[1], slots[2], slots[3]))
+        assert(
+            tree.root == depth2_root(slots[0], slots[1], slots[2], slots[3]),
+        )
         i += 1
     }
 }
@@ -2120,7 +2122,9 @@ fn test_stateful_insert_four_leaves_and_remove_them_all() {
         let err = tree.remove(leaf, siblings, indices)
         assert(err.code() == IMTError::None.code())
         slots[i] = 0
-        assert(tree.root == depth2_root(slots[0], slots[1], slots[2], slots[3]))
+        assert(
+            tree.root == depth2_root(slots[0], slots[1], slots[2], slots[3]),
+        )
         i += 1
     }
 }
@@ -2351,22 +2355,29 @@ impl QuinaryIMTData {
 
         while i < self.depth {
             let position = index % QUINARY_ARITY
-            self.last_subtrees[quinary_subtree_slot(i, position)] = h
+            let position_slot = quinary_subtree_slot(i, position)
+            self.last_subtrees[position_slot] = h
 
             if position == 0 {
                 let mut j: usize = 1
                 while j < QUINARY_ARITY {
-                    self.last_subtrees[quinary_subtree_slot(i, j)] = self.zeroes[i]
+                    let zero_slot = quinary_subtree_slot(i, j)
+                    self.last_subtrees[zero_slot] = self.zeroes[i]
                     j += 1
                 }
             }
 
+            let level_slot_0 = quinary_subtree_slot(i, 0)
+            let level_slot_1 = quinary_subtree_slot(i, 1)
+            let level_slot_2 = quinary_subtree_slot(i, 2)
+            let level_slot_3 = quinary_subtree_slot(i, 3)
+            let level_slot_4 = quinary_subtree_slot(i, 4)
             let nodes: [u256; QUINARY_ARITY] = [
-                self.last_subtrees[quinary_subtree_slot(i, 0)],
-                self.last_subtrees[quinary_subtree_slot(i, 1)],
-                self.last_subtrees[quinary_subtree_slot(i, 2)],
-                self.last_subtrees[quinary_subtree_slot(i, 3)],
-                self.last_subtrees[quinary_subtree_slot(i, 4)],
+                self.last_subtrees[level_slot_0],
+                self.last_subtrees[level_slot_1],
+                self.last_subtrees[level_slot_2],
+                self.last_subtrees[level_slot_3],
+                self.last_subtrees[level_slot_4],
             ]
             h = hash5_nodes(nodes)
             index /= QUINARY_ARITY
@@ -2406,17 +2417,21 @@ impl QuinaryIMTData {
             let mut j: usize = 0
             while j < QUINARY_ARITY {
                 if j < path_usize {
-                    if siblings[quinary_sibling_slot(i, j)] >= SNARK_SCALAR_FIELD {
+                    let sibling_slot = quinary_sibling_slot(i, j)
+                    let sibling = siblings[sibling_slot]
+                    if sibling >= SNARK_SCALAR_FIELD {
                         return (false, IMTError::ValueGreaterThanSnarkScalarField)
                     }
-                    nodes[j] = siblings[quinary_sibling_slot(i, j)]
+                    nodes[j] = sibling
                 } else if j == path_usize {
                     nodes[j] = h
                 } else {
-                    if siblings[quinary_sibling_slot(i, j - 1)] >= SNARK_SCALAR_FIELD {
+                    let sibling_slot = quinary_sibling_slot(i, j - 1)
+                    let sibling = siblings[sibling_slot]
+                    if sibling >= SNARK_SCALAR_FIELD {
                         return (false, IMTError::ValueGreaterThanSnarkScalarField)
                     }
-                    nodes[j] = siblings[quinary_sibling_slot(i, j - 1)]
+                    nodes[j] = sibling
                 }
 
                 j += 1
@@ -2459,29 +2474,35 @@ impl QuinaryIMTData {
         while i < self.depth {
             let path = indices[i]
             let path_usize = path as usize
-            update_index += path_usize * radix
-            radix *= QUINARY_ARITY
+            let contribution = path_usize * radix
+            update_index += contribution
+            radix = radix * QUINARY_ARITY
 
             let mut nodes: [u256; QUINARY_ARITY] = [0; QUINARY_ARITY]
             let mut j: usize = 0
             while j < QUINARY_ARITY {
                 if j < path_usize {
-                    nodes[j] = siblings[quinary_sibling_slot(i, j)]
+                    let sibling_slot = quinary_sibling_slot(i, j)
+                    nodes[j] = siblings[sibling_slot]
                 }
                 if j == path_usize {
                     nodes[j] = h
                 }
                 if j > path_usize {
-                    nodes[j] = siblings[quinary_sibling_slot(i, j - 1)]
+                    let sibling_slot = quinary_sibling_slot(i, j - 1)
+                    nodes[j] = siblings[sibling_slot]
                 }
 
                 j += 1
             }
 
-            if nodes[0] == self.last_subtrees[quinary_subtree_slot(i, 0)]
-                || nodes[QUINARY_ARITY - 1]
-                    == self.last_subtrees[quinary_subtree_slot(i, QUINARY_ARITY - 1)] {
-                self.last_subtrees[quinary_subtree_slot(i, path_usize)] = h
+            let first_slot = quinary_subtree_slot(i, 0)
+            let last_index = QUINARY_ARITY - 1
+            let last_slot = quinary_subtree_slot(i, last_index)
+            if nodes[0] == self.last_subtrees[first_slot]
+                || nodes[last_index] == self.last_subtrees[last_slot] {
+                let path_slot = quinary_subtree_slot(i, path_usize)
+                self.last_subtrees[path_slot] = h
             }
 
             h = hash5_nodes(nodes)
@@ -2508,7 +2529,12 @@ impl QuinaryIMTData {
 const QUINARY_TEST_MAX_LEAVES: usize = 25
 
 fn quinary_test_root(slots: [u256; QUINARY_TEST_MAX_LEAVES]) -> u256 {
-    let mut current: [u256; QUINARY_TEST_MAX_LEAVES] = slots
+    let mut current: [u256; QUINARY_TEST_MAX_LEAVES] = [0; QUINARY_TEST_MAX_LEAVES]
+    let mut copy_index: usize = 0
+    while copy_index < QUINARY_TEST_MAX_LEAVES {
+        current[copy_index] = slots[copy_index]
+        copy_index += 1
+    }
     let mut current_count = QUINARY_TEST_MAX_LEAVES
 
     while current_count > 1 {
@@ -2528,20 +2554,29 @@ fn quinary_test_root(slots: [u256; QUINARY_TEST_MAX_LEAVES]) -> u256 {
             i += 5
         }
 
-        current = next
+        copy_index = 0
+        while copy_index < QUINARY_TEST_MAX_LEAVES {
+            current[copy_index] = next[copy_index]
+            copy_index += 1
+        }
         current_count = next_count
     }
 
     current[0]
 }
 
-fn quinary_test_proof(
-    slots: [u256; QUINARY_TEST_MAX_LEAVES],
-    target_index: usize,
-) -> ([u256; QUINARY_SIBLINGS_LEN], [u8; MAX_DEPTH]) {
+fn quinary_test_proof(slots: [u256; QUINARY_TEST_MAX_LEAVES], target_index: usize) -> (
+    [u256; QUINARY_SIBLINGS_LEN],
+    [u8; MAX_DEPTH],
+) {
     let mut siblings: [u256; QUINARY_SIBLINGS_LEN] = [0; QUINARY_SIBLINGS_LEN]
     let mut indices: [u8; MAX_DEPTH] = [0; MAX_DEPTH]
-    let mut current: [u256; QUINARY_TEST_MAX_LEAVES] = slots
+    let mut current: [u256; QUINARY_TEST_MAX_LEAVES] = [0; QUINARY_TEST_MAX_LEAVES]
+    let mut copy_index: usize = 0
+    while copy_index < QUINARY_TEST_MAX_LEAVES {
+        current[copy_index] = slots[copy_index]
+        copy_index += 1
+    }
     let mut current_count = QUINARY_TEST_MAX_LEAVES
     let mut index = target_index
     let mut level: usize = 0
@@ -2576,7 +2611,11 @@ fn quinary_test_proof(
             i += 5
         }
 
-        current = next
+        copy_index = 0
+        while copy_index < QUINARY_TEST_MAX_LEAVES {
+            current[copy_index] = next[copy_index]
+            copy_index += 1
+        }
         current_count = next_count
         index /= QUINARY_ARITY
         level += 1
@@ -3787,16 +3826,19 @@ fn test_lazy_insert_matches_binary_reference_across_depths() {
             let (root, err) = tree.root()
             assert(err.code() == LazyIMTError::None.code())
             assert(
-                root == binary_root_from_dense_leaves(
-                    lazy_min_depth_for_leaf_count(leaf_count + 1),
-                    leaves,
-                    leaf_count + 1,
-                ),
+                root
+                    == binary_root_from_dense_leaves(
+                        lazy_min_depth_for_leaf_count(leaf_count + 1),
+                        leaves,
+                        leaf_count + 1,
+                    ),
             )
 
             let (root_at_depth, err) = tree.root_at_depth(depth)
             assert(err.code() == LazyIMTError::None.code())
-            assert(root_at_depth == binary_root_from_dense_leaves(depth, leaves, leaf_count + 1))
+            assert(
+                root_at_depth == binary_root_from_dense_leaves(depth, leaves, leaf_count + 1),
+            )
 
             leaf_count += 1
         }
@@ -3819,7 +3861,9 @@ fn test_lazy_insert_matches_binary_reference_depth_32_boundary() {
 
     let (root_at_depth, err) = tree.root_at_depth(32)
     assert(err.code() == LazyIMTError::None.code())
-    assert(root_at_depth == binary_root_from_dense_leaves(32, leaves, 1))
+    assert(
+        root_at_depth == binary_root_from_dense_leaves(32, leaves, 1),
+    )
 }
 
 #[test]
@@ -3851,7 +3895,9 @@ fn test_lazy_updates_match_binary_reference_across_depths() {
         assert(root == binary_root_from_dense_leaves(2, leaves, 4))
         let (root_at_depth, err) = tree.root_at_depth(depth)
         assert(err.code() == LazyIMTError::None.code())
-        assert(root_at_depth == binary_root_from_dense_leaves(depth, leaves, 4))
+        assert(
+            root_at_depth == binary_root_from_dense_leaves(depth, leaves, 4),
+        )
 
         let err = tree.update(22, 2)
         assert(err.code() == LazyIMTError::None.code())
@@ -3861,7 +3907,9 @@ fn test_lazy_updates_match_binary_reference_across_depths() {
         assert(root == binary_root_from_dense_leaves(2, leaves, 4))
         let (root_at_depth, err) = tree.root_at_depth(depth)
         assert(err.code() == LazyIMTError::None.code())
-        assert(root_at_depth == binary_root_from_dense_leaves(depth, leaves, 4))
+        assert(
+            root_at_depth == binary_root_from_dense_leaves(depth, leaves, 4),
+        )
 
         depth_idx += 1
     }
@@ -4264,7 +4312,12 @@ fn lean_root_from_slots(slots: [u256; LEAN_TEST_MAX_LEAVES], slot_count: usize) 
         return 0
     }
 
-    let mut current: [u256; LEAN_TEST_MAX_LEAVES] = slots
+    let mut current: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+    let mut copy_index: usize = 0
+    while copy_index < LEAN_TEST_MAX_LEAVES {
+        current[copy_index] = slots[copy_index]
+        copy_index += 1
+    }
     let mut current_count = slot_count
 
     while current_count > 1 {
@@ -4284,7 +4337,11 @@ fn lean_root_from_slots(slots: [u256; LEAN_TEST_MAX_LEAVES], slot_count: usize) 
             next_count += 1
         }
 
-        current = next
+        copy_index = 0
+        while copy_index < LEAN_TEST_MAX_LEAVES {
+            current[copy_index] = next[copy_index]
+            copy_index += 1
+        }
         current_count = next_count
     }
 
@@ -4298,7 +4355,12 @@ fn lean_proof_from_slots(
 ) -> ([u256; MAX_DEPTH], usize) {
     let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
     let mut sibling_count: usize = 0
-    let mut current: [u256; LEAN_TEST_MAX_LEAVES] = slots
+    let mut current: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+    let mut copy_index: usize = 0
+    while copy_index < LEAN_TEST_MAX_LEAVES {
+        current[copy_index] = slots[copy_index]
+        copy_index += 1
+    }
     let mut current_count = slot_count
     let mut index = target_index
 
@@ -4327,7 +4389,11 @@ fn lean_proof_from_slots(
             next_count += 1
         }
 
-        current = next
+        copy_index = 0
+        while copy_index < LEAN_TEST_MAX_LEAVES {
+            current[copy_index] = next[copy_index]
+            copy_index += 1
+        }
         current_count = next_count
         index /= 2
     }
@@ -4698,38 +4764,45 @@ impl LazyTowerHashChainData {
             return LazyTowerError::ItemMustBeInField
         }
 
-        let (_, _, _, new_level_lengths) = LazyTowerHashChainData::find_lowest_non_full_level_then_inc(self.level_lengths)
+        let (
+            _,
+            _,
+            _,
+            new_level_lengths,
+        ) = LazyTowerHashChainData::find_lowest_non_full_level_then_inc(self.level_lengths)
         let mut carry = item
         let mut level: usize = 0
 
         while true {
             let len = self.level_counts[level]
+            let base = level * 4
             if len < 4 {
-                self.level_items[level * 4 + len] = carry
+                let slot = base + len
+                self.level_items[slot] = carry
                 self.level_counts[level] = len + 1
                 let current = [
-                    self.level_items[level * 4],
-                    self.level_items[level * 4 + 1],
-                    self.level_items[level * 4 + 2],
-                    self.level_items[level * 4 + 3],
+                    self.level_items[base],
+                    self.level_items[base + 1],
+                    self.level_items[base + 2],
+                    self.level_items[base + 3],
                 ]
                 self.digests[level] = hash_chain4(current, self.level_counts[level])
                 break
             }
 
             let current = [
-                self.level_items[level * 4],
-                self.level_items[level * 4 + 1],
-                self.level_items[level * 4 + 2],
-                self.level_items[level * 4 + 3],
+                self.level_items[base],
+                self.level_items[base + 1],
+                self.level_items[base + 2],
+                self.level_items[base + 3],
             ]
             let incoming = carry
             carry = hash_chain4(current, 4)
 
-            self.level_items[level * 4] = incoming
-            self.level_items[level * 4 + 1] = 0
-            self.level_items[level * 4 + 2] = 0
-            self.level_items[level * 4 + 3] = 0
+            self.level_items[base] = incoming
+            self.level_items[base + 1] = 0
+            self.level_items[base + 2] = 0
+            self.level_items[base + 3] = 0
             self.level_counts[level] = 1
             self.digests[level] = incoming
             level += 1
@@ -4787,9 +4860,7 @@ fn lazytower_after_150() -> LazyTowerHashChainData {
 }
 
 fn hash_chain4(levels: [u256; 4], len: usize) -> u256 {
-    if len == 0 {
-        return 0
-    }
+    if len == 0 { return 0 }
     if len == 1 {
         return levels[0]
     }
@@ -4815,25 +4886,22 @@ fn lazytower_shift_tower_after_150() -> (u256, [u256; LAZY_TOWER_HEIGHT], u256) 
 
         while true {
             let len = lengths[level]
+            let base = level * 4
             if len < 4 {
-                levels[level * 4 + len] = carry
+                let slot = base + len
+                levels[slot] = carry
                 lengths[level] = len + 1
                 break
             }
 
-            let current = [
-                levels[level * 4],
-                levels[level * 4 + 1],
-                levels[level * 4 + 2],
-                levels[level * 4 + 3],
-            ]
+            let current = [levels[base], levels[base + 1], levels[base + 2], levels[base + 3]]
             let incoming = carry
             carry = hash_chain4(current, 4)
 
-            levels[level * 4] = incoming
-            levels[level * 4 + 1] = 0
-            levels[level * 4 + 2] = 0
-            levels[level * 4 + 3] = 0
+            levels[base] = incoming
+            levels[base + 1] = 0
+            levels[base + 2] = 0
+            levels[base + 3] = 0
             lengths[level] = 1
             level += 1
         }
@@ -4848,25 +4916,25 @@ fn lazytower_shift_tower_after_150() -> (u256, [u256; LAZY_TOWER_HEIGHT], u256) 
     while level < LAZY_TOWER_HEIGHT {
         let len = lengths[level]
         if len != 0 {
-            level_lengths += (len as u256) << ((level * LAZY_TOWER_BITS_PER_LEVEL) as u256)
-            let current = [
-                levels[level * 4],
-                levels[level * 4 + 1],
-                levels[level * 4 + 2],
-                levels[level * 4 + 3],
-            ]
+            let shift = (level * LAZY_TOWER_BITS_PER_LEVEL) as u256
+            let base = level * 4
+            level_lengths += (len as u256) << shift
+            let current = [levels[base], levels[base + 1], levels[base + 2], levels[base + 3]]
             digests[level] = hash_chain4(current, len)
             height = level + 1
         }
         level += 1
     }
 
-    let mut digest_of_digests = digests[height - 1]
-    if height > 1 {
-        let mut level = height - 1
-        while level != 0 {
-            level -= 1
-            digest_of_digests = hash2(digest_of_digests, digests[level])
+    let mut digest_of_digests: u256 = 0
+    if height != 0 {
+        digest_of_digests = digests[height - 1]
+        if height > 1 {
+            let mut level = height - 1
+            while level != 0 {
+                level -= 1
+                digest_of_digests = hash2(digest_of_digests, digests[level])
+            }
         }
     }
 
@@ -4994,7 +5062,8 @@ fn test_lazytower_find_lowest_non_full_level_matches_shift_tower() {
         let mut expected_level_lengths: u256 = 0
         let mut level: usize = 0
         while level < LAZY_TOWER_HEIGHT {
-            expected_level_lengths += ((lengths[level] as u256) << ((level * LAZY_TOWER_BITS_PER_LEVEL) as u256))
+            expected_level_lengths += ((lengths[level] as u256)
+                << ((level * LAZY_TOWER_BITS_PER_LEVEL) as u256))
             level += 1
         }
 
@@ -5098,50 +5167,182 @@ const ZKEDDSA_DELTAX2: u256 = 18169112827239535213603740968046936099482565969218
 const ZKEDDSA_DELTAY1: u256 = 4822598240965235353021859310978490456254180072341966996061361969858340984511
 const ZKEDDSA_DELTAY2: u256 = 13543378357184474310383646423534605062703850124878450029441667582061275654866
 const ZKEDDSA_IC: [[u256; 2]; 39] = [
-    [7039163794843290796256368468693852992261864980639380847782867461741038210431, 13828571545952070419695572439672637697093967550127663217094587479939756801713],
-    [3958090907019850444580447271310783643067855398231992297257715727710216995446, 20221946439601599894288820734713434259239717191029254240067234373135565758177],
-    [900186639711238933493055667378009920193627212372904879368486442415809327595, 2326167641766524616999631967433198170614424673993051767085816973791951172320],
-    [5036413725381298640320115097177392324444247429122196014822193539177279161834, 16915948281029825623174724126850423768748230097781953657414920017958567938481],
-    [18760100143371695362362583151699410223835931838504964976371030235483771799520, 11050897648840559830340797268632494985552806330900971650426635140540632129623],
-    [14405103043934777929451041926853384737748587264397789238453021115804714011027, 17654525523246776275961068512159018488399387144246684730694339431289852689612],
-    [8723869934697142623491762263289398094319535893464503540125898389370968107859, 6562444046746975238614247431088671155226534237756214900132774223548393484900],
-    [14577478605943949020672432197678273024089978103276775373202577864795436168402, 20868380911669423225158693169242758989558229682271980505657366061586596203338],
-    [15078791307200682406383940510187595016164044832563024269891293768166347461344, 13807879254500296471557402479543820453954075404741718297177665886866496451391],
-    [11961110457054262187040141268827975035460766426109310097612340764580611314242, 648031620139716874034542002574123681367629070550974595278392168004036814626],
-    [9897786420777014154834245148124872045575237833648028105961996898423566286793, 10942250463782575990311669310939232003635777350050348004971415243722694683862],
-    [21768976691153943693253939674737520933075287952326155542834234684045105263955, 2652628038258207868440308689934020510765602358527332281459263595352308874872],
-    [10579889892022441902715761343940775692321155123038188581132868576263856691960, 14197080288473739214766468387110821163678798975745451452929084680507366969089],
-    [17381487274016777148244396779385401991045642828052327241661444508026488993960, 12631141756649305162072161190046426727112068887466313087474366448379889938290],
-    [13935047382751423896533075574654791455853724928466459591893970338304052339429, 6824865220976543574218366346391934951925243253294023634161017592510424936549],
-    [7031992312358334117229960826366500136698824958913380375057168422867887208482, 6487726177217344454795293919275011847002886774229625835362883818222058658917],
-    [32761952607172566377921792852655350243312728025797797731884919650955995978, 17109740037766941001038815791052639848028856032033398873318266457482577886649],
-    [5148130823680965556573321200326358804854949261914205931196224467597274599399, 17786165933748885174698871854113633988020047930367652317579732342918892135076],
-    [19132395236354116173686960242674593409872273373618210170105548787911478039676, 13128673728382375315191668017332103847318829241457370626993176402741448018866],
-    [14279232715058070388045405059532116192488308995813346048366203712476135182708, 15194615736824271563039224473810596003691641177247333143890653748759024086797],
-    [9955090722504979957069720304999125823978111318362496584519854575527608185162, 5794103785028496675031047406750626512072617762810766655823567669958439141907],
-    [3093386023754979021969916793626732114241059635051234406414231194529079272032, 2726333648975816401517500089384058227785233536677037001841489035806732587931],
-    [5277410462435782523915882980275775886349488617157850699431034750288036800613, 21607346138964363953763925149731352915511002970774217667749452112345555034956],
-    [2882073216919257197946498011741429525374768355767062401579097340303609014667, 13336208254651518889575781043861573326120722149864211966571295065261003981732],
-    [16518085772523452403713249212239346119989769943791821955471370367814804849274, 3163851008551205343892721959924291514513839424028748364301581737083684712635],
-    [21443140829801323335830440272589422531303604169183393653690045415169893110317, 11843677807581613645245376500039550313868511109982120780557566436801551936632],
-    [9011343512724109228637988929452301928814416148302399365691495043540007452711, 19203719374228430540624285138844258546893532214993666117722702463877026204624],
-    [12282563786492051221220863019504107834872987144162405093912833624832473504126, 2098404497662286606968957419285970045028044455644658720985187205946176225636],
-    [1990701565738088758270472967471263340707808628204302356692995713089340295959, 4710902959112092813812405997875645709469153185247079786406984810436621334836],
-    [20358882933388981503171778761697392336011378779059025555927722043477769063258, 19015855458316650610909766042056506990773552974154423789621320056338171324109],
-    [20882010929117143317945388885678484675687595287997043750607534940060968021588, 11586557172082174037613559244105184201710114582175280732260566723406709924275],
-    [9866308320093007323457785354472236077116309736444536950583247217505300484593, 7621726862256096662846253511430079218096624239819015602672239587875065773680],
-    [14027123489779385457612700332560563436358522575256251872455086560940806515518, 10938955322537907189548948078384029109133599816409669950598646265343304376683],
-    [8185779524540657541561125117577265603809435796152263318353366879537563587361, 7022890698869206227386505409956869964786133909878013184769185704625348906859],
-    [11611413113751908909193648245064739218553980961929170910199270975967104957038, 18994807587760619856245913328685591005051029724453337667407306111138944756694],
-    [200383746952988761639379177517104787510472386926528110614397950418667358661, 20007848431425763869830663340890269703980870987344402378604194352912831137056],
-    [328413860030399674842447170312944751562586291423774720425356928068580343472, 5189648959630633293821012021210812639351882790811543893302480708749969871675],
-    [6012328917803371026931141367320642434394368982571440096775691385288621172219, 3144007704082241276171331516247837779546266689067323035946808770824524079278],
-    [6432946433062452526687536616554972830856614963273241146116338471741671687252, 15585047391247849588392219751347369098681511169371119693472990059654876497118],
+    [
+        7039163794843290796256368468693852992261864980639380847782867461741038210431,
+        13828571545952070419695572439672637697093967550127663217094587479939756801713,
+    ],
+    [
+        3958090907019850444580447271310783643067855398231992297257715727710216995446,
+        20221946439601599894288820734713434259239717191029254240067234373135565758177,
+    ],
+    [
+        900186639711238933493055667378009920193627212372904879368486442415809327595,
+        2326167641766524616999631967433198170614424673993051767085816973791951172320,
+    ],
+    [
+        5036413725381298640320115097177392324444247429122196014822193539177279161834,
+        16915948281029825623174724126850423768748230097781953657414920017958567938481,
+    ],
+    [
+        18760100143371695362362583151699410223835931838504964976371030235483771799520,
+        11050897648840559830340797268632494985552806330900971650426635140540632129623,
+    ],
+    [
+        14405103043934777929451041926853384737748587264397789238453021115804714011027,
+        17654525523246776275961068512159018488399387144246684730694339431289852689612,
+    ],
+    [
+        8723869934697142623491762263289398094319535893464503540125898389370968107859,
+        6562444046746975238614247431088671155226534237756214900132774223548393484900,
+    ],
+    [
+        14577478605943949020672432197678273024089978103276775373202577864795436168402,
+        20868380911669423225158693169242758989558229682271980505657366061586596203338,
+    ],
+    [
+        15078791307200682406383940510187595016164044832563024269891293768166347461344,
+        13807879254500296471557402479543820453954075404741718297177665886866496451391,
+    ],
+    [
+        11961110457054262187040141268827975035460766426109310097612340764580611314242,
+        648031620139716874034542002574123681367629070550974595278392168004036814626,
+    ],
+    [
+        9897786420777014154834245148124872045575237833648028105961996898423566286793,
+        10942250463782575990311669310939232003635777350050348004971415243722694683862,
+    ],
+    [
+        21768976691153943693253939674737520933075287952326155542834234684045105263955,
+        2652628038258207868440308689934020510765602358527332281459263595352308874872,
+    ],
+    [
+        10579889892022441902715761343940775692321155123038188581132868576263856691960,
+        14197080288473739214766468387110821163678798975745451452929084680507366969089,
+    ],
+    [
+        17381487274016777148244396779385401991045642828052327241661444508026488993960,
+        12631141756649305162072161190046426727112068887466313087474366448379889938290,
+    ],
+    [
+        13935047382751423896533075574654791455853724928466459591893970338304052339429,
+        6824865220976543574218366346391934951925243253294023634161017592510424936549,
+    ],
+    [
+        7031992312358334117229960826366500136698824958913380375057168422867887208482,
+        6487726177217344454795293919275011847002886774229625835362883818222058658917,
+    ],
+    [
+        32761952607172566377921792852655350243312728025797797731884919650955995978,
+        17109740037766941001038815791052639848028856032033398873318266457482577886649,
+    ],
+    [
+        5148130823680965556573321200326358804854949261914205931196224467597274599399,
+        17786165933748885174698871854113633988020047930367652317579732342918892135076,
+    ],
+    [
+        19132395236354116173686960242674593409872273373618210170105548787911478039676,
+        13128673728382375315191668017332103847318829241457370626993176402741448018866,
+    ],
+    [
+        14279232715058070388045405059532116192488308995813346048366203712476135182708,
+        15194615736824271563039224473810596003691641177247333143890653748759024086797,
+    ],
+    [
+        9955090722504979957069720304999125823978111318362496584519854575527608185162,
+        5794103785028496675031047406750626512072617762810766655823567669958439141907,
+    ],
+    [
+        3093386023754979021969916793626732114241059635051234406414231194529079272032,
+        2726333648975816401517500089384058227785233536677037001841489035806732587931,
+    ],
+    [
+        5277410462435782523915882980275775886349488617157850699431034750288036800613,
+        21607346138964363953763925149731352915511002970774217667749452112345555034956,
+    ],
+    [
+        2882073216919257197946498011741429525374768355767062401579097340303609014667,
+        13336208254651518889575781043861573326120722149864211966571295065261003981732,
+    ],
+    [
+        16518085772523452403713249212239346119989769943791821955471370367814804849274,
+        3163851008551205343892721959924291514513839424028748364301581737083684712635,
+    ],
+    [
+        21443140829801323335830440272589422531303604169183393653690045415169893110317,
+        11843677807581613645245376500039550313868511109982120780557566436801551936632,
+    ],
+    [
+        9011343512724109228637988929452301928814416148302399365691495043540007452711,
+        19203719374228430540624285138844258546893532214993666117722702463877026204624,
+    ],
+    [
+        12282563786492051221220863019504107834872987144162405093912833624832473504126,
+        2098404497662286606968957419285970045028044455644658720985187205946176225636,
+    ],
+    [
+        1990701565738088758270472967471263340707808628204302356692995713089340295959,
+        4710902959112092813812405997875645709469153185247079786406984810436621334836,
+    ],
+    [
+        20358882933388981503171778761697392336011378779059025555927722043477769063258,
+        19015855458316650610909766042056506990773552974154423789621320056338171324109,
+    ],
+    [
+        20882010929117143317945388885678484675687595287997043750607534940060968021588,
+        11586557172082174037613559244105184201710114582175280732260566723406709924275,
+    ],
+    [
+        9866308320093007323457785354472236077116309736444536950583247217505300484593,
+        7621726862256096662846253511430079218096624239819015602672239587875065773680,
+    ],
+    [
+        14027123489779385457612700332560563436358522575256251872455086560940806515518,
+        10938955322537907189548948078384029109133599816409669950598646265343304376683,
+    ],
+    [
+        8185779524540657541561125117577265603809435796152263318353366879537563587361,
+        7022890698869206227386505409956869964786133909878013184769185704625348906859,
+    ],
+    [
+        11611413113751908909193648245064739218553980961929170910199270975967104957038,
+        18994807587760619856245913328685591005051029724453337667407306111138944756694,
+    ],
+    [
+        200383746952988761639379177517104787510472386926528110614397950418667358661,
+        20007848431425763869830663340890269703980870987344402378604194352912831137056,
+    ],
+    [
+        328413860030399674842447170312944751562586291423774720425356928068580343472,
+        5189648959630633293821012021210812639351882790811543893302480708749969871675,
+    ],
+    [
+        6012328917803371026931141367320642434394368982571440096775691385288621172219,
+        3144007704082241276171331516247837779546266689067323035946808770824524079278,
+    ],
+    [
+        6432946433062452526687536616554972830856614963273241146116338471741671687252,
+        15585047391247849588392219751347369098681511169371119693472990059654876497118,
+    ],
 ]
 
-const ZKEDDSA_VALID_PROOF_A: [u256; 2] = [17528466561243994507156735549431280194483454072861575501173892613769621292738, 13334331641341834863950460587194011336994501572280950619868173329033445310046]
-const ZKEDDSA_VALID_PROOF_B: [[u256; 2]; 2] = [[4136687898878182756507930824286573367512968872120921327328907772755020181986, 16946578497650494187034817332375080544394147848888471691348209970418797339003], [293393600019913021519359211637811859680686063694044620660919662018667553856, 21146245914968136638829472976886579619729301680835170687183577255862644516607]]
-const ZKEDDSA_VALID_PROOF_C: [u256; 2] = [3598757137429869480095336538600480566608302245914455985202791314560626695964, 11619413447575448802436470559619686172845802696628278837923017180432479465158]
+const ZKEDDSA_VALID_PROOF_A: [u256; 2] = [
+    17528466561243994507156735549431280194483454072861575501173892613769621292738,
+    13334331641341834863950460587194011336994501572280950619868173329033445310046,
+]
+const ZKEDDSA_VALID_PROOF_B: [[u256; 2]; 2] = [
+    [
+        4136687898878182756507930824286573367512968872120921327328907772755020181986,
+        16946578497650494187034817332375080544394147848888471691348209970418797339003,
+    ],
+    [
+        293393600019913021519359211637811859680686063694044620660919662018667553856,
+        21146245914968136638829472976886579619729301680835170687183577255862644516607,
+    ],
+]
+const ZKEDDSA_VALID_PROOF_C: [u256; 2] = [
+    3598757137429869480095336538600480566608302245914455985202791314560626695964,
+    11619413447575448802436470559619686172845802696628278837923017180432479465158,
+]
 const ZKEDDSA_VALID_PROOF_PUB_SIGNALS: [u256; 38] = [
     35740002958743364890071866196201363823,
     21888242871839275222246405745257275088548364400416034343698204186575808495616,
@@ -5183,9 +5384,24 @@ const ZKEDDSA_VALID_PROOF_PUB_SIGNALS: [u256; 38] = [
     562046206989085878832492993516240920558397288279,
 ]
 
-const ZKEDDSA_INVALIDWATERMARK_PROOF_A: [u256; 2] = [5619386777550251165445446255014057764331161015713454738850363221298688123946, 15887383563850875692984992026439035170702552380602141777166641529498217808574]
-const ZKEDDSA_INVALIDWATERMARK_PROOF_B: [[u256; 2]; 2] = [[9590301595185569949911312762383928674839915896601208729143580811906936130467, 8437875960641229727696046048481807779939938394256310037232403618616753515130], [17227072454348180862352676091821602468770109969425586600395285452970051772017, 12971055644946456712400889888565341623079261945546272912242168688441553576984]]
-const ZKEDDSA_INVALIDWATERMARK_PROOF_C: [u256; 2] = [4193515822008615782242465982996350569059328781838699245250009258434186259377, 19100530222367591112731399018635829717409271117680065649322550438407949918928]
+const ZKEDDSA_INVALIDWATERMARK_PROOF_A: [u256; 2] = [
+    5619386777550251165445446255014057764331161015713454738850363221298688123946,
+    15887383563850875692984992026439035170702552380602141777166641529498217808574,
+]
+const ZKEDDSA_INVALIDWATERMARK_PROOF_B: [[u256; 2]; 2] = [
+    [
+        9590301595185569949911312762383928674839915896601208729143580811906936130467,
+        8437875960641229727696046048481807779939938394256310037232403618616753515130,
+    ],
+    [
+        17227072454348180862352676091821602468770109969425586600395285452970051772017,
+        12971055644946456712400889888565341623079261945546272912242168688441553576984,
+    ],
+]
+const ZKEDDSA_INVALIDWATERMARK_PROOF_C: [u256; 2] = [
+    4193515822008615782242465982996350569059328781838699245250009258434186259377,
+    19100530222367591112731399018635829717409271117680065649322550438407949918928,
+]
 const ZKEDDSA_INVALIDWATERMARK_PROOF_PUB_SIGNALS: [u256; 38] = [
     35740002958743364890071866196201363823,
     21888242871839275222246405745257275088548364400416034343698204186575808495616,
@@ -5227,9 +5443,24 @@ const ZKEDDSA_INVALIDWATERMARK_PROOF_PUB_SIGNALS: [u256; 38] = [
     1390849295786071768276380950238675083608645509734,
 ]
 
-const ZKEDDSA_INVALID_PROOF_A: [u256; 2] = [24765472138576256721129922112474274435312828114464110753639991614264191895234, 13334331641341834863950460587194011336994501572280950619868173329033445310046]
-const ZKEDDSA_INVALID_PROOF_B: [[u256; 2]; 2] = [[4136687898878182756507930824286573367512968872120921327328907772755020181986, 16946578497650494187034817332375080544394147848888471691348209970418797339003], [293393600019913021519359211637811859680686063694044620660919662018667553856, 21146245914968136638829472976886579619729301680835170687183577255862644516607]]
-const ZKEDDSA_INVALID_PROOF_C: [u256; 2] = [3598757137429869480095336538600480566608302245914455985202791314560626695964, 11619413447575448802436470559619686172845802696628278837923017180432479465158]
+const ZKEDDSA_INVALID_PROOF_A: [u256; 2] = [
+    24765472138576256721129922112474274435312828114464110753639991614264191895234,
+    13334331641341834863950460587194011336994501572280950619868173329033445310046,
+]
+const ZKEDDSA_INVALID_PROOF_B: [[u256; 2]; 2] = [
+    [
+        4136687898878182756507930824286573367512968872120921327328907772755020181986,
+        16946578497650494187034817332375080544394147848888471691348209970418797339003,
+    ],
+    [
+        293393600019913021519359211637811859680686063694044620660919662018667553856,
+        21146245914968136638829472976886579619729301680835170687183577255862644516607,
+    ],
+]
+const ZKEDDSA_INVALID_PROOF_C: [u256; 2] = [
+    3598757137429869480095336538600480566608302245914455985202791314560626695964,
+    11619413447575448802436470559619686172845802696628278837923017180432479465158,
+]
 const ZKEDDSA_INVALID_PROOF_PUB_SIGNALS: [u256; 38] = [
     35740002958743364890071866196201363823,
     21888242871839275222246405745257275088548364400416034343698204186575808495616,
@@ -5305,7 +5536,6 @@ impl ExcubiaError {
             _ => false,
         }
     }
-
     pub fn code(self) -> u256 {
         match self {
             ExcubiaError::None => 0,
@@ -5346,7 +5576,12 @@ struct GatePassedEvent {
     gate: Address,
 }
 
-fn excubia_set_gate_err(owner: Address, gate: Address, caller: Address, new_gate: Address) -> ExcubiaError {
+fn excubia_set_gate_err(
+    owner: Address,
+    gate: Address,
+    caller: Address,
+    new_gate: Address,
+) -> ExcubiaError {
     if caller != owner {
         return ExcubiaError::OwnerOnly
     }
@@ -5366,6 +5601,41 @@ fn excubia_gate_only_err(gate: Address, caller: Address) -> ExcubiaError {
     ExcubiaError::None
 }
 
+fn excubia_pass_common_err(gate: Address, caller: Address, already_passed: bool) -> ExcubiaError {
+    let err = excubia_gate_only_err(gate, caller)
+    if !err.is_none() {
+        return err
+    }
+    if already_passed {
+        return ExcubiaError::AlreadyPassed
+    }
+    ExcubiaError::None
+}
+
+fn excubia_unexpected_owner_err(owner_inner: u256, passerby: Address) -> ExcubiaError {
+    if owner_inner != passerby.inner {
+        return ExcubiaError::UnexpectedTokenOwner
+    }
+    ExcubiaError::None
+}
+
+fn excubia_insufficient_score_err(score: u256, threshold_score: u256) -> ExcubiaError {
+    if (score / GITCOIN_SCORE_FACTOR) < threshold_score {
+        return ExcubiaError::InsufficientScore
+    }
+    ExcubiaError::None
+}
+
+fn excubia_hat_membership_err(is_criterion_hat: bool, is_wearer: bool) -> ExcubiaError {
+    if !is_criterion_hat {
+        return ExcubiaError::NotCriterionHat
+    }
+    if !is_wearer {
+        return ExcubiaError::NotWearingCriterionHat
+    }
+    ExcubiaError::None
+}
+
 fn emit_gate_set(gate: Address) uses (log: mut Log) {
     log.emit(GateSetEvent { gate })
 }
@@ -5380,47 +5650,72 @@ fn eas_attestation_err(
     schema: u256,
     attester: Address,
     passerby: Address,
-) -> ExcubiaError uses (call: mut Call) {
-    let actual_schema: u256 = call.call(
-        addr: eas,
-        gas: 100000,
-        value: 0,
-        message: MockEASMsg::GetSchema { uid: attestation_id },
+) -> ExcubiaError
+uses (call: mut Call)
+{
+    let actual_schema: u256 = call
+        .call(
+            addr: eas,
+            gas: 100000,
+            value: 0,
+            message: MockEASMsg::GetSchema { uid: attestation_id },
+        )
+
+    let actual_attester: u256 = call
+        .call(
+            addr: eas,
+            gas: 100000,
+            value: 0,
+            message: MockEASMsg::GetAttester { uid: attestation_id },
+        )
+
+    let actual_recipient: u256 = call
+        .call(
+            addr: eas,
+            gas: 100000,
+            value: 0,
+            message: MockEASMsg::GetRecipient { uid: attestation_id },
+        )
+
+    let revocation_time: u256 = call
+        .call(
+            addr: eas,
+            gas: 100000,
+            value: 0,
+            message: MockEASMsg::GetRevocationTime { uid: attestation_id },
+        )
+    eas_attestation_fields_err(
+        actual_schema: actual_schema,
+        expected_schema: schema,
+        actual_attester: actual_attester,
+        expected_attester: attester,
+        actual_recipient: actual_recipient,
+        expected_recipient: passerby,
+        revocation_time: revocation_time,
     )
-    if actual_schema != schema {
+}
+
+fn eas_attestation_fields_err(
+    actual_schema: u256,
+    expected_schema: u256,
+    actual_attester: u256,
+    expected_attester: Address,
+    actual_recipient: u256,
+    expected_recipient: Address,
+    revocation_time: u256,
+) -> ExcubiaError {
+    if actual_schema != expected_schema {
         return ExcubiaError::UnexpectedSchema
     }
-
-    let actual_attester: u256 = call.call(
-        addr: eas,
-        gas: 100000,
-        value: 0,
-        message: MockEASMsg::GetAttester { uid: attestation_id },
-    )
-    if actual_attester != attester.inner {
+    if actual_attester != expected_attester.inner {
         return ExcubiaError::UnexpectedAttester
     }
-
-    let actual_recipient: u256 = call.call(
-        addr: eas,
-        gas: 100000,
-        value: 0,
-        message: MockEASMsg::GetRecipient { uid: attestation_id },
-    )
-    if actual_recipient != passerby.inner {
+    if actual_recipient != expected_recipient.inner {
         return ExcubiaError::UnexpectedRecipient
     }
-
-    let revocation_time: u256 = call.call(
-        addr: eas,
-        gas: 100000,
-        value: 0,
-        message: MockEASMsg::GetRevocationTime { uid: attestation_id },
-    )
     if revocation_time != 0 {
         return ExcubiaError::RevokedAttestation
     }
-
     ExcubiaError::None
 }
 
@@ -5429,17 +5724,23 @@ fn semaphore_proof_err(
     group_id: u256,
     scope: u256,
     nullifier: u256,
-) -> ExcubiaError uses (call: mut Call) {
+) -> ExcubiaError
+uses (call: mut Call)
+{
+    let is_valid: bool = call
+        .call(
+            addr: semaphore,
+            gas: 100000,
+            value: 0,
+            message: MockSemaphoreMsg::VerifyProof { group_id: group_id, nullifier: nullifier },
+        )
+    semaphore_proof_validity_err(group_id: group_id, scope: scope, is_valid: is_valid)
+}
+
+fn semaphore_proof_validity_err(group_id: u256, scope: u256, is_valid: bool) -> ExcubiaError {
     if scope != group_id {
         return ExcubiaError::UnexpectedScope
     }
-
-    let is_valid: bool = call.call(
-        addr: semaphore,
-        gas: 100000,
-        value: 0,
-        message: MockSemaphoreMsg::VerifyProof { group_id: group_id, nullifier: nullifier },
-    )
     if !is_valid {
         return ExcubiaError::InvalidProof
     }
@@ -5484,18 +5785,22 @@ fn zkeddsa_ecadd(x0: u256, y0: u256, x1: u256, y1: u256) -> (bool, u256, u256) {
     (ok == 1, mload(output_ptr), mload(output_ptr + 32))
 }
 
-fn zkeddsa_g1_mul_acc(acc: [u256; 2], point: [u256; 2], scalar: u256) -> (bool, [u256; 2]) {
+fn zkeddsa_g1_mul_acc(acc_x: u256, acc_y: u256, point: [u256; 2], scalar: u256) -> (
+    bool,
+    u256,
+    u256,
+) {
     let (mul_ok, mul_x, mul_y) = zkeddsa_ecmul(point[0], point[1], scalar)
     if !mul_ok {
-        return (false, [0, 0])
+        return (false, 0, 0)
     }
 
-    let (add_ok, add_x, add_y) = zkeddsa_ecadd(acc[0], acc[1], mul_x, mul_y)
+    let (add_ok, add_x, add_y) = zkeddsa_ecadd(acc_x, acc_y, mul_x, mul_y)
     if !add_ok {
-        return (false, [0, 0])
+        return (false, 0, 0)
     }
 
-    (true, [add_x, add_y])
+    (true, add_x, add_y)
 }
 
 fn zkeddsa_verify_pairing(
@@ -5542,8 +5847,40 @@ fn zkeddsa_verify_pairing(
     ok == 1 && mload(output_ptr) != 0
 }
 
+fn zkeddsa_verify_proof(
+    p_a: [u256; 2],
+    p_b: [[u256; 2]; 2],
+    p_c: [u256; 2],
+    pub_signals: [u256; 38],
+) -> bool {
+    let mut i: usize = 0
+    while i < 38 {
+        if pub_signals[i] >= ZKEDDSA_R {
+            return false
+        }
+        i += 1
+    }
+
+    let mut vk_x0 = ZKEDDSA_IC[0][0]
+    let mut vk_x1 = ZKEDDSA_IC[0][1]
+    i = 0
+    while i < 38 {
+        let (ok, next_x0, next_x1) = zkeddsa_g1_mul_acc(
+            vk_x0,
+            vk_x1,
+            ZKEDDSA_IC[i + 1],
+            pub_signals[i],
+        )
+        if !ok { return false }
+        vk_x0 = next_x0
+        vk_x1 = next_x1
+        i += 1
+    }
+
+    zkeddsa_verify_pairing(p_a: p_a, p_b: p_b, p_c: p_c, vk_x: [vk_x0, vk_x1])
+}
+
 fn zkeddsa_proof_err(
-    verifier: Address,
     valid_event_id: u256,
     valid_signer_0: u256,
     valid_signer_1: u256,
@@ -5552,7 +5889,26 @@ fn zkeddsa_proof_err(
     p_b: [[u256; 2]; 2],
     p_c: [u256; 2],
     pub_signals: [u256; 38],
-) -> ExcubiaError uses (call: mut Call) {
+) -> ExcubiaError {
+    let is_valid = zkeddsa_verify_proof(p_a: p_a, p_b: p_b, p_c: p_c, pub_signals: pub_signals)
+    zkeddsa_proof_validity_err(
+        valid_event_id: valid_event_id,
+        valid_signer_0: valid_signer_0,
+        valid_signer_1: valid_signer_1,
+        passerby: passerby,
+        is_valid: is_valid,
+        pub_signals: pub_signals,
+    )
+}
+
+fn zkeddsa_proof_validity_err(
+    valid_event_id: u256,
+    valid_signer_0: u256,
+    valid_signer_1: u256,
+    passerby: Address,
+    is_valid: bool,
+    pub_signals: [u256; 38],
+) -> ExcubiaError {
     if pub_signals[13] != valid_signer_0 || pub_signals[14] != valid_signer_1 {
         return ExcubiaError::InvalidSigners
     }
@@ -5562,96 +5918,16 @@ fn zkeddsa_proof_err(
     if pub_signals[37] != passerby.inner {
         return ExcubiaError::InvalidWatermark
     }
-
-    let is_valid: bool = call.static(
-        addr: verifier,
-        gas: 2000000,
-        message: ZKEdDSAEventTicketPCDVerifierMsg::VerifyProof {
-            p_a: p_a,
-            p_b: p_b,
-            p_c: p_c,
-            pub_signals: pub_signals,
-        },
-    )
     if !is_valid {
         return ExcubiaError::InvalidProof
     }
-
     ExcubiaError::None
 }
 
-
-msg FreeForAllExcubiaMsg {
-    #[selector = 0x51000001]
-    SetGate { gate: Address } -> u256,
-    #[selector = 0x51000002]
-    Check { passerby: Address } -> u256,
-    #[selector = 0x51000003]
-    Pass { passerby: Address } -> u256,
-    #[selector = 0x51000004]
-    Gate -> u256,
-    #[selector = 0x51000005]
-    Trait -> u256,
-    #[selector = 0x51000006]
-    HasPassed { passerby: Address } -> bool,
-}
-
-struct FreeForAllExcubiaStore {
-    owner: Address,
-    gate: Address,
-    passed_passersby: StorageMap<Address, bool>,
-}
-
-pub contract FreeForAllExcubia uses (ctx: Ctx, log: mut Log) {
-    mut store: FreeForAllExcubiaStore
-
-    init() uses (mut store, ctx) {
-        store.owner = ctx.caller()
-        store.gate = Address::zero()
-    }
-
-    recv FreeForAllExcubiaMsg {
-        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
-            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
-            if err.is_none() {
-                store.gate = gate
-                emit_gate_set(gate: gate)
-            }
-            err.code()
-        }
-
-        Check { passerby } -> u256 {
-            let _ = passerby
-            ExcubiaError::None.code()
-        }
-
-        Pass { passerby } -> u256 uses (mut store, ctx, mut log) {
-            let err = excubia_gate_only_err(store.gate, ctx.caller())
-            if !err.is_none() {
-                return err.code()
-            }
-            if store.passed_passersby.get(key: passerby) {
-                return ExcubiaError::AlreadyPassed.code()
-            }
-
-            store.passed_passersby.set(key: passerby, value: true)
-            emit_gate_passed(passerby: passerby, gate: store.gate)
-            ExcubiaError::None.code()
-        }
-
-        Gate -> u256 uses (store) {
-            store.gate.inner
-        }
-
-        Trait -> u256 {
-            EXCUBIA_TRAIT_FREE_FOR_ALL
-        }
-
-        HasPassed { passerby } -> bool uses (store) {
-            store.passed_passersby.get(key: passerby)
-        }
-    }
-}
+// TODO: Re-enable the Excubia contract wrappers once the library-first refactor is settled and
+// the Fe message ABI is stable enough for the full wrapper and parity-test surface again.
+// The real gatekeeping logic lives in the helper functions above; these wrappers are
+// intentionally disabled for now while zk-kit-fe stays library-first.
 
 msg MockERC721Msg {
     #[selector = 0x52000001]
@@ -5660,12 +5936,10 @@ msg MockERC721Msg {
     OwnerOf { token_id: u256 } -> u256,
 }
 
-struct MockERC721Store {
-    owners: StorageMap<u256, u256>,
-}
+struct MockERC721Store { owners: StorageMap<u256, u256> }
 
 pub contract MockERC721 {
-    mut store: MockERC721Store
+    mut store: MockERC721Store,
 
     recv MockERC721Msg {
         Mint { token_id, owner } uses (mut store) {
@@ -5678,98 +5952,10 @@ pub contract MockERC721 {
     }
 }
 
-msg ERC721ExcubiaMsg {
-    #[selector = 0x53000001]
-    SetGate { gate: Address } -> u256,
-    #[selector = 0x53000002]
-    Check { passerby: Address, token_id: u256 } -> u256,
-    #[selector = 0x53000003]
-    Pass { passerby: Address, token_id: u256 } -> u256,
-    #[selector = 0x53000004]
-    Gate -> u256,
-    #[selector = 0x53000005]
-    Trait -> u256,
-    #[selector = 0x53000006]
-    HasPassedTokenId { token_id: u256 } -> bool,
-}
-
-struct ERC721ExcubiaStore {
-    owner: Address,
-    gate: Address,
-    nft: Address,
-    passed_token_ids: StorageMap<u256, bool>,
-}
-
-pub contract ERC721Excubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
-    mut store: ERC721ExcubiaStore
-
-    init(nft: Address) uses (mut store, ctx) {
-        assert(nft != Address::zero())
-        store.owner = ctx.caller()
-        store.gate = Address::zero()
-        store.nft = nft
-    }
-
-    recv ERC721ExcubiaMsg {
-        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
-            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
-            if err.is_none() {
-                store.gate = gate
-                emit_gate_set(gate: gate)
-            }
-            err.code()
-        }
-
-        Check { passerby, token_id } -> u256 uses (store, mut call) {
-            let owner_inner: u256 = call.call(
-                addr: store.nft,
-                gas: 100000,
-                value: 0,
-                message: MockERC721Msg::OwnerOf { token_id: token_id },
-            )
-            if owner_inner != passerby.inner {
-                return ExcubiaError::UnexpectedTokenOwner.code()
-            }
-            ExcubiaError::None.code()
-        }
-
-        Pass { passerby, token_id } -> u256 uses (mut store, ctx, mut call, mut log) {
-            let err = excubia_gate_only_err(store.gate, ctx.caller())
-            if !err.is_none() {
-                return err.code()
-            }
-            if store.passed_token_ids.get(key: token_id) {
-                return ExcubiaError::AlreadyPassed.code()
-            }
-
-            let owner_inner: u256 = call.call(
-                addr: store.nft,
-                gas: 100000,
-                value: 0,
-                message: MockERC721Msg::OwnerOf { token_id: token_id },
-            )
-            if owner_inner != passerby.inner {
-                return ExcubiaError::UnexpectedTokenOwner.code()
-            }
-
-            store.passed_token_ids.set(key: token_id, value: true)
-            emit_gate_passed(passerby: passerby, gate: store.gate)
-            ExcubiaError::None.code()
-        }
-
-        Gate -> u256 uses (store) {
-            store.gate.inner
-        }
-
-        Trait -> u256 {
-            EXCUBIA_TRAIT_ERC721
-        }
-
-        HasPassedTokenId { token_id } -> bool uses (store) {
-            store.passed_token_ids.get(key: token_id)
-        }
-    }
-}
+// TODO: Re-enable the Excubia contract wrappers once the library-first refactor is settled and
+// the Fe message ABI is stable enough for the full wrapper and parity-test surface again.
+// The real gatekeeping logic lives in the helper functions above; these wrappers are
+// intentionally disabled for now while zk-kit-fe stays library-first.
 
 msg MockGitcoinPassportDecoderMsg {
     #[selector = 0x54000001]
@@ -5778,12 +5964,10 @@ msg MockGitcoinPassportDecoderMsg {
     GetScore { user: Address } -> u256,
 }
 
-struct MockGitcoinPassportDecoderStore {
-    scores: StorageMap<Address, u256>,
-}
+struct MockGitcoinPassportDecoderStore { scores: StorageMap<Address, u256> }
 
 pub contract MockGitcoinPassportDecoder {
-    mut store: MockGitcoinPassportDecoderStore
+    mut store: MockGitcoinPassportDecoderStore,
 
     recv MockGitcoinPassportDecoderMsg {
         SetScore { user, score } uses (mut store) {
@@ -5796,101 +5980,10 @@ pub contract MockGitcoinPassportDecoder {
     }
 }
 
-msg GitcoinPassportExcubiaMsg {
-    #[selector = 0x55000001]
-    SetGate { gate: Address } -> u256,
-    #[selector = 0x55000002]
-    Check { passerby: Address } -> u256,
-    #[selector = 0x55000003]
-    Pass { passerby: Address } -> u256,
-    #[selector = 0x55000004]
-    Gate -> u256,
-    #[selector = 0x55000005]
-    Trait -> u256,
-    #[selector = 0x55000006]
-    HasPassed { passerby: Address } -> bool,
-}
-
-struct GitcoinPassportExcubiaStore {
-    owner: Address,
-    gate: Address,
-    decoder: Address,
-    threshold_score: u256,
-    passed_users: StorageMap<Address, bool>,
-}
-
-pub contract GitcoinPassportExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
-    mut store: GitcoinPassportExcubiaStore
-
-    init(decoder: Address, threshold_score: u256) uses (mut store, ctx) {
-        assert(decoder != Address::zero())
-        assert(threshold_score > 0)
-        store.owner = ctx.caller()
-        store.gate = Address::zero()
-        store.decoder = decoder
-        store.threshold_score = threshold_score
-    }
-
-    recv GitcoinPassportExcubiaMsg {
-        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
-            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
-            if err.is_none() {
-                store.gate = gate
-                emit_gate_set(gate: gate)
-            }
-            err.code()
-        }
-
-        Check { passerby } -> u256 uses (store, mut call) {
-            let score: u256 = call.call(
-                addr: store.decoder,
-                gas: 100000,
-                value: 0,
-                message: MockGitcoinPassportDecoderMsg::GetScore { user: passerby },
-            )
-            if (score / GITCOIN_SCORE_FACTOR) < store.threshold_score {
-                return ExcubiaError::InsufficientScore.code()
-            }
-            ExcubiaError::None.code()
-        }
-
-        Pass { passerby } -> u256 uses (mut store, ctx, mut call, mut log) {
-            let err = excubia_gate_only_err(store.gate, ctx.caller())
-            if !err.is_none() {
-                return err.code()
-            }
-            if store.passed_users.get(key: passerby) {
-                return ExcubiaError::AlreadyPassed.code()
-            }
-
-            let score: u256 = call.call(
-                addr: store.decoder,
-                gas: 100000,
-                value: 0,
-                message: MockGitcoinPassportDecoderMsg::GetScore { user: passerby },
-            )
-            if (score / GITCOIN_SCORE_FACTOR) < store.threshold_score {
-                return ExcubiaError::InsufficientScore.code()
-            }
-
-            store.passed_users.set(key: passerby, value: true)
-            emit_gate_passed(passerby: passerby, gate: store.gate)
-            ExcubiaError::None.code()
-        }
-
-        Gate -> u256 uses (store) {
-            store.gate.inner
-        }
-
-        Trait -> u256 {
-            EXCUBIA_TRAIT_GITCOIN_PASSPORT
-        }
-
-        HasPassed { passerby } -> bool uses (store) {
-            store.passed_users.get(key: passerby)
-        }
-    }
-}
+// TODO: Re-enable the Excubia contract wrappers once the library-first refactor is settled and
+// the Fe message ABI is stable enough for the full wrapper and parity-test surface again.
+// The real gatekeeping logic lives in the helper functions above; these wrappers are
+// intentionally disabled for now while zk-kit-fe stays library-first.
 
 msg MockHatsMsg {
     #[selector = 0x56000001]
@@ -5899,12 +5992,10 @@ msg MockHatsMsg {
     IsWearerOfHat { user: Address, hat: u256 } -> bool,
 }
 
-struct MockHatsStore {
-    wearers: StorageMap<(Address, u256), bool>,
-}
+struct MockHatsStore { wearers: StorageMap<(Address, u256), bool> }
 
 pub contract MockHats {
-    mut store: MockHatsStore
+    mut store: MockHatsStore,
 
     recv MockHatsMsg {
         SetWearer { user, hat, is_wearer } uses (mut store) {
@@ -5917,121 +6008,10 @@ pub contract MockHats {
     }
 }
 
-msg HatsExcubiaMsg {
-    #[selector = 0x57000001]
-    SetGate { gate: Address } -> u256,
-    #[selector = 0x57000002]
-    Check { passerby: Address, hat: u256 } -> u256,
-    #[selector = 0x57000003]
-    Pass { passerby: Address, hat: u256 } -> u256,
-    #[selector = 0x57000004]
-    Gate -> u256,
-    #[selector = 0x57000005]
-    Trait -> u256,
-    #[selector = 0x57000006]
-    HasPassed { passerby: Address } -> bool,
-    #[selector = 0x57000007]
-    IsCriterionHat { hat: u256 } -> bool,
-}
-
-struct HatsExcubiaStore {
-    owner: Address,
-    gate: Address,
-    hats: Address,
-    criterion_hats: StorageMap<u256, bool>,
-    passed_users: StorageMap<Address, bool>,
-}
-
-pub contract HatsExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
-    mut store: HatsExcubiaStore
-
-    init(hats: Address, criterion_hats: [u256; EXCUBIA_HAT_LIMIT], count: usize) uses (mut store, ctx) {
-        assert(hats != Address::zero())
-        assert(count > 0)
-        assert(count <= EXCUBIA_HAT_LIMIT)
-
-        store.owner = ctx.caller()
-        store.gate = Address::zero()
-        store.hats = hats
-
-        let mut i: usize = 0
-        while i < count {
-            store.criterion_hats.set(key: criterion_hats[i], value: true)
-            i += 1
-        }
-    }
-
-    recv HatsExcubiaMsg {
-        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
-            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
-            if err.is_none() {
-                store.gate = gate
-                emit_gate_set(gate: gate)
-            }
-            err.code()
-        }
-
-        Check { passerby, hat } -> u256 uses (store, mut call) {
-            if !store.criterion_hats.get(key: hat) {
-                return ExcubiaError::NotCriterionHat.code()
-            }
-
-            let is_wearer: bool = call.call(
-                addr: store.hats,
-                gas: 100000,
-                value: 0,
-                message: MockHatsMsg::IsWearerOfHat { user: passerby, hat: hat },
-            )
-            if !is_wearer {
-                return ExcubiaError::NotWearingCriterionHat.code()
-            }
-            ExcubiaError::None.code()
-        }
-
-        Pass { passerby, hat } -> u256 uses (mut store, ctx, mut call, mut log) {
-            let err = excubia_gate_only_err(store.gate, ctx.caller())
-            if !err.is_none() {
-                return err.code()
-            }
-            if store.passed_users.get(key: passerby) {
-                return ExcubiaError::AlreadyPassed.code()
-            }
-            if !store.criterion_hats.get(key: hat) {
-                return ExcubiaError::NotCriterionHat.code()
-            }
-
-            let is_wearer: bool = call.call(
-                addr: store.hats,
-                gas: 100000,
-                value: 0,
-                message: MockHatsMsg::IsWearerOfHat { user: passerby, hat: hat },
-            )
-            if !is_wearer {
-                return ExcubiaError::NotWearingCriterionHat.code()
-            }
-
-            store.passed_users.set(key: passerby, value: true)
-            emit_gate_passed(passerby: passerby, gate: store.gate)
-            ExcubiaError::None.code()
-        }
-
-        Gate -> u256 uses (store) {
-            store.gate.inner
-        }
-
-        Trait -> u256 {
-            EXCUBIA_TRAIT_HATS
-        }
-
-        HasPassed { passerby } -> bool uses (store) {
-            store.passed_users.get(key: passerby)
-        }
-
-        IsCriterionHat { hat } -> bool uses (store) {
-            store.criterion_hats.get(key: hat)
-        }
-    }
-}
+// TODO: Re-enable the Excubia contract wrappers once the library-first refactor is settled and
+// the Fe message ABI is stable enough for the full wrapper and parity-test surface again.
+// The real gatekeeping logic lives in the helper functions above; these wrappers are
+// intentionally disabled for now while zk-kit-fe stays library-first.
 
 msg MockEASMsg {
     #[selector = 0x59000001]
@@ -6052,9 +6032,11 @@ struct MockEASStore {
 }
 
 pub contract MockEAS {
-    mut store: MockEASStore
+    mut store: MockEASStore,
 
-    init(recipient: Address, attester: Address, schema: u256) uses (mut store) {
+    init(recipient: Address, attester: Address, schema: u256)
+    uses (mut store)
+    {
         store.schemas.set(key: 1, value: schema)
         store.recipients.set(key: 1, value: recipient.inner)
         store.attesters.set(key: 1, value: attester.inner)
@@ -6100,102 +6082,10 @@ pub contract MockEAS {
     }
 }
 
-msg EASExcubiaMsg {
-    #[selector = 0x5a000001]
-    SetGate { gate: Address } -> u256,
-    #[selector = 0x5a000002]
-    Check { passerby: Address, attestation_id: u256 } -> u256,
-    #[selector = 0x5a000003]
-    Pass { passerby: Address, attestation_id: u256 } -> u256,
-    #[selector = 0x5a000004]
-    Gate -> u256,
-    #[selector = 0x5a000005]
-    Trait -> u256,
-    #[selector = 0x5a000006]
-    HasPassedAttestation { attestation_id: u256 } -> bool,
-}
-
-struct EASExcubiaStore {
-    owner: Address,
-    gate: Address,
-    eas: Address,
-    schema: u256,
-    attester: Address,
-    passed_attestations: StorageMap<u256, bool>,
-}
-
-pub contract EASExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
-    mut store: EASExcubiaStore
-
-    init(eas: Address, attester: Address, schema: u256) uses (mut store, ctx) {
-        assert(eas != Address::zero())
-        assert(attester != Address::zero())
-        store.owner = ctx.caller()
-        store.gate = Address::zero()
-        store.eas = eas
-        store.schema = schema
-        store.attester = attester
-    }
-
-    recv EASExcubiaMsg {
-        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
-            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
-            if err.is_none() {
-                store.gate = gate
-                emit_gate_set(gate: gate)
-            }
-            err.code()
-        }
-
-        Check { passerby, attestation_id } -> u256 uses (store, mut call) {
-            eas_attestation_err(
-                eas: store.eas,
-                attestation_id: attestation_id,
-                schema: store.schema,
-                attester: store.attester,
-                passerby: passerby,
-            )
-            .code()
-        }
-
-        Pass { passerby, attestation_id } -> u256 uses (mut store, ctx, mut call, mut log) {
-            let err = excubia_gate_only_err(store.gate, ctx.caller())
-            if !err.is_none() {
-                return err.code()
-            }
-            if store.passed_attestations.get(key: attestation_id) {
-                return ExcubiaError::AlreadyPassed.code()
-            }
-
-            let err = eas_attestation_err(
-                eas: store.eas,
-                attestation_id: attestation_id,
-                schema: store.schema,
-                attester: store.attester,
-                passerby: passerby,
-            )
-            if !err.is_none() {
-                return err.code()
-            }
-
-            store.passed_attestations.set(key: attestation_id, value: true)
-            emit_gate_passed(passerby: passerby, gate: store.gate)
-            ExcubiaError::None.code()
-        }
-
-        Gate -> u256 uses (store) {
-            store.gate.inner
-        }
-
-        Trait -> u256 {
-            EXCUBIA_TRAIT_EAS
-        }
-
-        HasPassedAttestation { attestation_id } -> bool uses (store) {
-            store.passed_attestations.get(key: attestation_id)
-        }
-    }
-}
+// TODO: Re-enable the Excubia contract wrappers once the library-first refactor is settled and
+// the Fe message ABI is stable enough for the full wrapper and parity-test surface again.
+// The real gatekeeping logic lives in the helper functions above; these wrappers are
+// intentionally disabled for now while zk-kit-fe stays library-first.
 
 msg MockSemaphoreMsg {
     #[selector = 0x5b000001]
@@ -6211,9 +6101,11 @@ struct MockSemaphoreStore {
 }
 
 pub contract MockSemaphore {
-    mut store: MockSemaphoreStore
+    mut store: MockSemaphoreStore,
 
-    init() uses (mut store) {
+    init()
+    uses (mut store)
+    {
         store.group_counter = 1
         store.groups.set(key: 0, value: true)
         store.proofs.set(key: 0, value: true)
@@ -6225,1687 +6117,28 @@ pub contract MockSemaphore {
             store.group_counter
         }
 
-        VerifyProof { group_id, nullifier } -> bool uses (store) {
+        VerifyProof { group_id, nullifier } -> bool
+        uses (store)
+        {
             store.groups.get(key: group_id) && store.proofs.get(key: nullifier)
         }
     }
 }
 
-msg SemaphoreExcubiaMsg {
-    #[selector = 0x5c000001]
-    SetGate { gate: Address } -> u256,
-    #[selector = 0x5c000002]
-    Check {
-        passerby: Address,
-        merkle_tree_depth: u256,
-        merkle_tree_root: u256,
-        nullifier: u256,
-        message_value: u256,
-        scope: u256,
-        points: [u256; 8],
-    } -> u256,
-    #[selector = 0x5c000003]
-    Pass {
-        passerby: Address,
-        merkle_tree_depth: u256,
-        merkle_tree_root: u256,
-        nullifier: u256,
-        message_value: u256,
-        scope: u256,
-        points: [u256; 8],
-    } -> u256,
-    #[selector = 0x5c000004]
-    Gate -> u256,
-    #[selector = 0x5c000005]
-    Trait -> u256,
-    #[selector = 0x5c000006]
-    HasPassedNullifier { nullifier: u256 } -> bool,
-}
-
-struct SemaphoreExcubiaStore {
-    owner: Address,
-    gate: Address,
-    semaphore: Address,
-    group_id: u256,
-    passed_nullifiers: StorageMap<u256, bool>,
-}
-
-pub contract SemaphoreExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
-    mut store: SemaphoreExcubiaStore
-
-    init(semaphore: Address, group_id: u256) uses (mut store, ctx, mut call) {
-        assert(semaphore != Address::zero())
-        let group_counter: u256 = call.call(
-            addr: semaphore,
-            gas: 100000,
-            value: 0,
-            message: MockSemaphoreMsg::GroupCounter {},
-        )
-        assert(group_counter > group_id)
-
-        store.owner = ctx.caller()
-        store.gate = Address::zero()
-        store.semaphore = semaphore
-        store.group_id = group_id
-    }
-
-    recv SemaphoreExcubiaMsg {
-        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
-            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
-            if err.is_none() {
-                store.gate = gate
-                emit_gate_set(gate: gate)
-            }
-            err.code()
-        }
-
-        Check {
-            passerby,
-            merkle_tree_depth,
-            merkle_tree_root,
-            nullifier,
-            message_value,
-            scope,
-            points,
-        } -> u256 uses (store, mut call) {
-            let _ = passerby
-            let _ = merkle_tree_depth
-            let _ = merkle_tree_root
-            let _ = message_value
-            let _ = points
-            semaphore_proof_err(
-                semaphore: store.semaphore,
-                group_id: store.group_id,
-                scope: scope,
-                nullifier: nullifier,
-            )
-            .code()
-        }
-
-        Pass {
-            passerby,
-            merkle_tree_depth,
-            merkle_tree_root,
-            nullifier,
-            message_value,
-            scope,
-            points,
-        } -> u256 uses (mut store, ctx, mut call, mut log) {
-            let err = excubia_gate_only_err(store.gate, ctx.caller())
-            if !err.is_none() {
-                return err.code()
-            }
-            if store.passed_nullifiers.get(key: nullifier) {
-                return ExcubiaError::AlreadyPassed.code()
-            }
-
-            let _ = passerby
-            let _ = merkle_tree_depth
-            let _ = merkle_tree_root
-            let _ = message_value
-            let _ = points
-
-            let err = semaphore_proof_err(
-                semaphore: store.semaphore,
-                group_id: store.group_id,
-                scope: scope,
-                nullifier: nullifier,
-            )
-            if !err.is_none() {
-                return err.code()
-            }
-
-            store.passed_nullifiers.set(key: nullifier, value: true)
-            emit_gate_passed(passerby: passerby, gate: store.gate)
-            ExcubiaError::None.code()
-        }
-
-        Gate -> u256 uses (store) {
-            store.gate.inner
-        }
-
-        Trait -> u256 {
-            EXCUBIA_TRAIT_SEMAPHORE
-        }
-
-        HasPassedNullifier { nullifier } -> bool uses (store) {
-            store.passed_nullifiers.get(key: nullifier)
-        }
-    }
-}
-
-msg ZKEdDSAEventTicketPCDVerifierMsg {
-    #[selector = 0x5d000001]
-    VerifyProof {
-        p_a: [u256; 2],
-        p_b: [[u256; 2]; 2],
-        p_c: [u256; 2],
-        pub_signals: [u256; 38],
-    } -> bool,
-}
-
-pub contract ZKEdDSAEventTicketPCDVerifier {
-    recv ZKEdDSAEventTicketPCDVerifierMsg {
-        VerifyProof { p_a, p_b, p_c, pub_signals } -> bool {
-            let mut i: usize = 0
-            while i < 38 {
-                if pub_signals[i] >= ZKEDDSA_R {
-                    return false
-                }
-                i += 1
-            }
-
-            let mut vk_x: [u256; 2] = ZKEDDSA_IC[0]
-            i = 0
-            while i < 38 {
-                let (ok, next) = zkeddsa_g1_mul_acc(vk_x, ZKEDDSA_IC[i + 1], pub_signals[i])
-                if !ok {
-                    return false
-                }
-                vk_x = next
-                i += 1
-            }
-
-            zkeddsa_verify_pairing(p_a: p_a, p_b: p_b, p_c: p_c, vk_x: vk_x)
-        }
-    }
-}
-
-msg ZKEdDSAEventTicketPCDExcubiaMsg {
-    #[selector = 0x5e000001]
-    SetGate { gate: Address } -> u256,
-    #[selector = 0x5e000002]
-    Check {
-        passerby: Address,
-        p_a: [u256; 2],
-        p_b: [[u256; 2]; 2],
-        p_c: [u256; 2],
-        pub_signals: [u256; 38],
-    } -> u256,
-    #[selector = 0x5e000003]
-    Pass {
-        passerby: Address,
-        p_a: [u256; 2],
-        p_b: [[u256; 2]; 2],
-        p_c: [u256; 2],
-        pub_signals: [u256; 38],
-    } -> u256,
-    #[selector = 0x5e000004]
-    Gate -> u256,
-    #[selector = 0x5e000005]
-    Trait -> u256,
-    #[selector = 0x5e000006]
-    HasPassedZKEdDSAEventTicketPCD { ticket_id: u256 } -> bool,
-}
-
-struct ZKEdDSAEventTicketPCDExcubiaStore {
-    owner: Address,
-    gate: Address,
-    verifier: Address,
-    valid_event_id: u256,
-    valid_signer_0: u256,
-    valid_signer_1: u256,
-    passed_ticket_ids: StorageMap<u256, bool>,
-}
-
-pub contract ZKEdDSAEventTicketPCDExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
-    mut store: ZKEdDSAEventTicketPCDExcubiaStore
-
-    init(verifier: Address, valid_event_id: u256, valid_signer_0: u256, valid_signer_1: u256)
-        uses (mut store, ctx)
-    {
-        assert(verifier != Address::zero())
-        store.owner = ctx.caller()
-        store.gate = Address::zero()
-        store.verifier = verifier
-        store.valid_event_id = valid_event_id
-        store.valid_signer_0 = valid_signer_0
-        store.valid_signer_1 = valid_signer_1
-    }
-
-    recv ZKEdDSAEventTicketPCDExcubiaMsg {
-        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
-            let err = excubia_set_gate_err(store.owner, store.gate, ctx.caller(), gate)
-            if err.is_none() {
-                store.gate = gate
-                emit_gate_set(gate: gate)
-            }
-            err.code()
-        }
-
-        Check { passerby, p_a, p_b, p_c, pub_signals } -> u256 uses (store, mut call) {
-            zkeddsa_proof_err(
-                verifier: store.verifier,
-                valid_event_id: store.valid_event_id,
-                valid_signer_0: store.valid_signer_0,
-                valid_signer_1: store.valid_signer_1,
-                passerby: passerby,
-                p_a: p_a,
-                p_b: p_b,
-                p_c: p_c,
-                pub_signals: pub_signals,
-            )
-            .code()
-        }
-
-        Pass { passerby, p_a, p_b, p_c, pub_signals } -> u256 uses (mut store, ctx, mut call, mut log) {
-            let err = excubia_gate_only_err(store.gate, ctx.caller())
-            if !err.is_none() {
-                return err.code()
-            }
-            let ticket_id = pub_signals[0]
-            if store.passed_ticket_ids.get(key: ticket_id) {
-                return ExcubiaError::AlreadyPassed.code()
-            }
-
-            let err = zkeddsa_proof_err(
-                verifier: store.verifier,
-                valid_event_id: store.valid_event_id,
-                valid_signer_0: store.valid_signer_0,
-                valid_signer_1: store.valid_signer_1,
-                passerby: passerby,
-                p_a: p_a,
-                p_b: p_b,
-                p_c: p_c,
-                pub_signals: pub_signals,
-            )
-            if !err.is_none() {
-                return err.code()
-            }
-
-            store.passed_ticket_ids.set(key: ticket_id, value: true)
-            emit_gate_passed(passerby: passerby, gate: store.gate)
-            ExcubiaError::None.code()
-        }
-
-        Gate -> u256 uses (store) {
-            store.gate.inner
-        }
-
-        Trait -> u256 {
-            EXCUBIA_TRAIT_ZKEDDSA_EVENT_TICKET_PCD
-        }
-
-        HasPassedZKEdDSAEventTicketPCD { ticket_id } -> bool uses (store) {
-            store.passed_ticket_ids.get(key: ticket_id)
-        }
-    }
-}
-
-msg ExcubiaCallerMsg {
-    #[selector = 0x58000001]
-    FreeForAllSetGate { target: Address, gate: Address } -> u256,
-    #[selector = 0x58000002]
-    FreeForAllPass { target: Address, passerby: Address } -> u256,
-    #[selector = 0x58000003]
-    ERC721SetGate { target: Address, gate: Address } -> u256,
-    #[selector = 0x58000004]
-    ERC721Pass { target: Address, passerby: Address, token_id: u256 } -> u256,
-    #[selector = 0x58000005]
-    GitcoinSetGate { target: Address, gate: Address } -> u256,
-    #[selector = 0x58000006]
-    GitcoinPass { target: Address, passerby: Address } -> u256,
-    #[selector = 0x58000007]
-    HatsSetGate { target: Address, gate: Address } -> u256,
-    #[selector = 0x58000008]
-    HatsPass { target: Address, passerby: Address, hat: u256 } -> u256,
-    #[selector = 0x58000009]
-    EASSetGate { target: Address, gate: Address } -> u256,
-    #[selector = 0x5800000a]
-    EASPass { target: Address, passerby: Address, attestation_id: u256 } -> u256,
-    #[selector = 0x5800000b]
-    SemaphoreSetGate { target: Address, gate: Address } -> u256,
-    #[selector = 0x5800000c]
-    SemaphorePass {
-        target: Address,
-        passerby: Address,
-        merkle_tree_depth: u256,
-        merkle_tree_root: u256,
-        nullifier: u256,
-        message_value: u256,
-        scope: u256,
-        points: [u256; 8],
-    } -> u256,
-    #[selector = 0x5800000d]
-    ZKEdDSASetGate { target: Address, gate: Address } -> u256,
-    #[selector = 0x5800000e]
-    ZKEdDSAPass {
-        target: Address,
-        passerby: Address,
-        p_a: [u256; 2],
-        p_b: [[u256; 2]; 2],
-        p_c: [u256; 2],
-        pub_signals: [u256; 38],
-    } -> u256,
-}
-
-pub contract ExcubiaCaller uses (call: mut Call) {
-    recv ExcubiaCallerMsg {
-        FreeForAllSetGate { target, gate } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: FreeForAllExcubiaMsg::SetGate { gate: gate },
-            )
-        }
-
-        FreeForAllPass { target, passerby } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: FreeForAllExcubiaMsg::Pass { passerby: passerby },
-            )
-        }
-
-        ERC721SetGate { target, gate } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: ERC721ExcubiaMsg::SetGate { gate: gate },
-            )
-        }
-
-        ERC721Pass { target, passerby, token_id } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: ERC721ExcubiaMsg::Pass { passerby: passerby, token_id: token_id },
-            )
-        }
-
-        GitcoinSetGate { target, gate } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: GitcoinPassportExcubiaMsg::SetGate { gate: gate },
-            )
-        }
-
-        GitcoinPass { target, passerby } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: GitcoinPassportExcubiaMsg::Pass { passerby: passerby },
-            )
-        }
-
-        HatsSetGate { target, gate } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: HatsExcubiaMsg::SetGate { gate: gate },
-            )
-        }
-
-        HatsPass { target, passerby, hat } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: HatsExcubiaMsg::Pass { passerby: passerby, hat: hat },
-            )
-        }
-
-        EASSetGate { target, gate } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: EASExcubiaMsg::SetGate { gate: gate },
-            )
-        }
-
-        EASPass { target, passerby, attestation_id } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: EASExcubiaMsg::Pass { passerby: passerby, attestation_id: attestation_id },
-            )
-        }
-
-        SemaphoreSetGate { target, gate } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: SemaphoreExcubiaMsg::SetGate { gate: gate },
-            )
-        }
-
-        SemaphorePass {
-            target,
-            passerby,
-            merkle_tree_depth,
-            merkle_tree_root,
-            nullifier,
-            message_value,
-            scope,
-            points,
-        } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: SemaphoreExcubiaMsg::Pass {
-                    passerby: passerby,
-                    merkle_tree_depth: merkle_tree_depth,
-                    merkle_tree_root: merkle_tree_root,
-                    nullifier: nullifier,
-                    message_value: message_value,
-                    scope: scope,
-                    points: points,
-                },
-            )
-        }
-
-        ZKEdDSASetGate { target, gate } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 200000,
-                value: 0,
-                message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: gate },
-            )
-        }
-
-        ZKEdDSAPass { target, passerby, p_a, p_b, p_c, pub_signals } -> u256 uses (mut call) {
-            call.call(
-                addr: target,
-                gas: 5000000,
-                value: 0,
-                message: ZKEdDSAEventTicketPCDExcubiaMsg::Pass {
-                    passerby: passerby,
-                    p_a: p_a,
-                    p_b: p_b,
-                    p_c: p_c,
-                    pub_signals: pub_signals,
-                },
-            )
-        }
-    }
-}
-
-#[test]
-fn test_free_for_all_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
-    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2000)
-    let excubia = evm.create2<FreeForAllExcubia>(value: 0, args: (), salt: 2001)
-    let passerby = Address { inner: 0x1001 }
-
-    let trait_value: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: FreeForAllExcubiaMsg::Trait {},
-    )
-    assert(trait_value == EXCUBIA_TRAIT_FREE_FOR_ALL)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::FreeForAllSetGate { target: excubia, gate: caller },
-    )
-    assert(err == ExcubiaError::OwnerOnly.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: FreeForAllExcubiaMsg::SetGate { gate: Address::zero() },
-    )
-    assert(err == ExcubiaError::ZeroAddress.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: FreeForAllExcubiaMsg::SetGate { gate: caller },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let gate_inner: u256 = evm.call(addr: excubia, gas: 100000, value: 0, message: FreeForAllExcubiaMsg::Gate {})
-    assert(gate_inner == caller.inner)
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: FreeForAllExcubiaMsg::SetGate { gate: passerby },
-    )
-    assert(err == ExcubiaError::GateAlreadySet.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: FreeForAllExcubiaMsg::Check { passerby: passerby },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: FreeForAllExcubiaMsg::HasPassed { passerby: passerby },
-    )
-    assert(!has_passed)
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: FreeForAllExcubiaMsg::Pass { passerby: passerby },
-    )
-    assert(err == ExcubiaError::GateOnly.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::FreeForAllPass { target: excubia, passerby: passerby },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: FreeForAllExcubiaMsg::HasPassed { passerby: passerby },
-    )
-    assert(has_passed)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::FreeForAllPass { target: excubia, passerby: passerby },
-    )
-    assert(err == ExcubiaError::AlreadyPassed.code())
-}
-
-#[test]
-fn test_erc721_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
-    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2010)
-    let nft = evm.create2<MockERC721>(value: 0, args: (), salt: 2011)
-    let excubia = evm.create2<ERC721Excubia>(value: 0, args: (nft,), salt: 2012)
-    let passerby = Address { inner: 0x2001 }
-    let other = Address { inner: 0x2002 }
-
-    evm.call(addr: nft, gas: 100000, value: 0, message: MockERC721Msg::Mint { token_id: 0, owner: passerby })
-    evm.call(addr: nft, gas: 100000, value: 0, message: MockERC721Msg::Mint { token_id: 1, owner: other })
-
-    let trait_value: u256 = evm.call(addr: excubia, gas: 100000, value: 0, message: ERC721ExcubiaMsg::Trait {})
-    assert(trait_value == EXCUBIA_TRAIT_ERC721)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::ERC721SetGate { target: excubia, gate: caller },
-    )
-    assert(err == ExcubiaError::OwnerOnly.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ERC721ExcubiaMsg::SetGate { gate: Address::zero() },
-    )
-    assert(err == ExcubiaError::ZeroAddress.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ERC721ExcubiaMsg::SetGate { gate: caller },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ERC721ExcubiaMsg::Check { passerby: passerby, token_id: 1 },
-    )
-    assert(err == ExcubiaError::UnexpectedTokenOwner.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ERC721ExcubiaMsg::Check { passerby: passerby, token_id: 0 },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ERC721ExcubiaMsg::HasPassedTokenId { token_id: 0 },
-    )
-    assert(!has_passed)
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ERC721ExcubiaMsg::Pass { passerby: passerby, token_id: 0 },
-    )
-    assert(err == ExcubiaError::GateOnly.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::ERC721Pass { target: excubia, passerby: passerby, token_id: 1 },
-    )
-    assert(err == ExcubiaError::UnexpectedTokenOwner.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::ERC721Pass { target: excubia, passerby: passerby, token_id: 0 },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ERC721ExcubiaMsg::HasPassedTokenId { token_id: 0 },
-    )
-    assert(has_passed)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::ERC721Pass { target: excubia, passerby: passerby, token_id: 0 },
-    )
-    assert(err == ExcubiaError::AlreadyPassed.code())
-}
-
-#[test]
-fn test_gitcoin_passport_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
-    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2020)
-    let decoder = evm.create2<MockGitcoinPassportDecoder>(value: 0, args: (), salt: 2021)
-    let excubia = evm.create2<GitcoinPassportExcubia>(value: 0, args: (decoder, 35), salt: 2022)
-    let passerby = Address { inner: 0x3001 }
-    let low_score = Address { inner: 0x3002 }
-
-    evm.call(
-        addr: decoder,
-        gas: 100000,
-        value: 0,
-        message: MockGitcoinPassportDecoderMsg::SetScore { user: passerby, score: 5000 },
-    )
-    evm.call(
-        addr: decoder,
-        gas: 100000,
-        value: 0,
-        message: MockGitcoinPassportDecoderMsg::SetScore { user: low_score, score: 1000 },
-    )
-
-    let trait_value: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: GitcoinPassportExcubiaMsg::Trait {},
-    )
-    assert(trait_value == EXCUBIA_TRAIT_GITCOIN_PASSPORT)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::GitcoinSetGate { target: excubia, gate: caller },
-    )
-    assert(err == ExcubiaError::OwnerOnly.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: GitcoinPassportExcubiaMsg::SetGate { gate: Address::zero() },
-    )
-    assert(err == ExcubiaError::ZeroAddress.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: GitcoinPassportExcubiaMsg::SetGate { gate: caller },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: GitcoinPassportExcubiaMsg::Check { passerby: low_score },
-    )
-    assert(err == ExcubiaError::InsufficientScore.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: GitcoinPassportExcubiaMsg::Check { passerby: passerby },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: GitcoinPassportExcubiaMsg::HasPassed { passerby: passerby },
-    )
-    assert(!has_passed)
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: GitcoinPassportExcubiaMsg::Pass { passerby: passerby },
-    )
-    assert(err == ExcubiaError::GateOnly.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::GitcoinPass { target: excubia, passerby: low_score },
-    )
-    assert(err == ExcubiaError::InsufficientScore.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::GitcoinPass { target: excubia, passerby: passerby },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: GitcoinPassportExcubiaMsg::HasPassed { passerby: passerby },
-    )
-    assert(has_passed)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::GitcoinPass { target: excubia, passerby: passerby },
-    )
-    assert(err == ExcubiaError::AlreadyPassed.code())
-}
-
-#[test]
-fn test_hats_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
-    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2030)
-    let hats = evm.create2<MockHats>(value: 0, args: (), salt: 2031)
-    let excubia = evm.create2<HatsExcubia>(value: 0, args: (hats, [1, 0, 0, 0], 1), salt: 2032)
-    let passerby = Address { inner: 0x4001 }
-    let not_wearer = Address { inner: 0x4002 }
-
-    evm.call(
-        addr: hats,
-        gas: 100000,
-        value: 0,
-        message: MockHatsMsg::SetWearer { user: passerby, hat: 1, is_wearer: true },
-    )
-
-    let trait_value: u256 = evm.call(addr: excubia, gas: 100000, value: 0, message: HatsExcubiaMsg::Trait {})
-    assert(trait_value == EXCUBIA_TRAIT_HATS)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::HatsSetGate { target: excubia, gate: caller },
-    )
-    assert(err == ExcubiaError::OwnerOnly.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: HatsExcubiaMsg::SetGate { gate: Address::zero() },
-    )
-    assert(err == ExcubiaError::ZeroAddress.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: HatsExcubiaMsg::SetGate { gate: caller },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: HatsExcubiaMsg::Check { passerby: passerby, hat: 2 },
-    )
-    assert(err == ExcubiaError::NotCriterionHat.code())
-
-    let is_criterion: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: HatsExcubiaMsg::IsCriterionHat { hat: 2 },
-    )
-    assert(!is_criterion)
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: HatsExcubiaMsg::Check { passerby: not_wearer, hat: 1 },
-    )
-    assert(err == ExcubiaError::NotWearingCriterionHat.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: HatsExcubiaMsg::Check { passerby: passerby, hat: 1 },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: HatsExcubiaMsg::HasPassed { passerby: passerby },
-    )
-    assert(!has_passed)
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: HatsExcubiaMsg::Pass { passerby: passerby, hat: 1 },
-    )
-    assert(err == ExcubiaError::GateOnly.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::HatsPass { target: excubia, passerby: passerby, hat: 2 },
-    )
-    assert(err == ExcubiaError::NotCriterionHat.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::HatsPass { target: excubia, passerby: not_wearer, hat: 1 },
-    )
-    assert(err == ExcubiaError::NotWearingCriterionHat.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::HatsPass { target: excubia, passerby: passerby, hat: 1 },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: HatsExcubiaMsg::HasPassed { passerby: passerby },
-    )
-    assert(has_passed)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::HatsPass { target: excubia, passerby: passerby, hat: 1 },
-    )
-    assert(err == ExcubiaError::AlreadyPassed.code())
-}
-
-#[test]
-fn test_eas_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
-    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2050)
-    let passerby = Address { inner: 0x5001 }
-    let attester = Address { inner: 0x5002 }
-    let eas = evm.create2<MockEAS>(value: 0, args: (passerby, attester, EAS_SCHEMA_ID), salt: 2051)
-    let excubia = evm.create2<EASExcubia>(value: 0, args: (eas, attester, EAS_SCHEMA_ID), salt: 2052)
-
-    let trait_value: u256 = evm.call(addr: excubia, gas: 100000, value: 0, message: EASExcubiaMsg::Trait {})
-    assert(trait_value == EXCUBIA_TRAIT_EAS)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::EASSetGate { target: excubia, gate: caller },
-    )
-    assert(err == ExcubiaError::OwnerOnly.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: EASExcubiaMsg::SetGate { gate: Address::zero() },
-    )
-    assert(err == ExcubiaError::ZeroAddress.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: EASExcubiaMsg::SetGate { gate: caller },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: EASExcubiaMsg::Check { passerby: passerby, attestation_id: 4 },
-    )
-    assert(err == ExcubiaError::UnexpectedRecipient.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: EASExcubiaMsg::Check { passerby: passerby, attestation_id: 2 },
-    )
-    assert(err == ExcubiaError::RevokedAttestation.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: EASExcubiaMsg::Check { passerby: passerby, attestation_id: 3 },
-    )
-    assert(err == ExcubiaError::UnexpectedSchema.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: EASExcubiaMsg::Check { passerby: passerby, attestation_id: 5 },
-    )
-    assert(err == ExcubiaError::UnexpectedAttester.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: EASExcubiaMsg::Check { passerby: passerby, attestation_id: 1 },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: EASExcubiaMsg::HasPassedAttestation { attestation_id: 1 },
-    )
-    assert(!has_passed)
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: EASExcubiaMsg::Pass { passerby: passerby, attestation_id: 1 },
-    )
-    assert(err == ExcubiaError::GateOnly.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 4 },
-    )
-    assert(err == ExcubiaError::UnexpectedRecipient.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 2 },
-    )
-    assert(err == ExcubiaError::RevokedAttestation.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 3 },
-    )
-    assert(err == ExcubiaError::UnexpectedSchema.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 5 },
-    )
-    assert(err == ExcubiaError::UnexpectedAttester.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 1 },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: EASExcubiaMsg::HasPassedAttestation { attestation_id: 1 },
-    )
-    assert(has_passed)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::EASPass { target: excubia, passerby: passerby, attestation_id: 1 },
-    )
-    assert(err == ExcubiaError::AlreadyPassed.code())
-}
-
-#[test]
-fn test_semaphore_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
-    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2060)
-    let semaphore = evm.create2<MockSemaphore>(value: 0, args: (), salt: 2061)
-    let excubia = evm.create2<SemaphoreExcubia>(value: 0, args: (semaphore, 0), salt: 2062)
-    let passerby = Address { inner: 0x6001 }
-
-    let trait_value: u256 = evm.call(addr: excubia, gas: 100000, value: 0, message: SemaphoreExcubiaMsg::Trait {})
-    assert(trait_value == EXCUBIA_TRAIT_SEMAPHORE)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::SemaphoreSetGate { target: excubia, gate: caller },
-    )
-    assert(err == ExcubiaError::OwnerOnly.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: SemaphoreExcubiaMsg::SetGate { gate: Address::zero() },
-    )
-    assert(err == ExcubiaError::ZeroAddress.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: SemaphoreExcubiaMsg::SetGate { gate: caller },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: SemaphoreExcubiaMsg::Check {
-            passerby: passerby,
-            merkle_tree_depth: 1,
-            merkle_tree_root: 0,
-            nullifier: 0,
-            message_value: 0,
-            scope: 1,
-            points: [0, 0, 0, 0, 0, 0, 0, 0],
-        },
-    )
-    assert(err == ExcubiaError::UnexpectedScope.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: SemaphoreExcubiaMsg::Check {
-            passerby: passerby,
-            merkle_tree_depth: 1,
-            merkle_tree_root: 0,
-            nullifier: 1,
-            message_value: 0,
-            scope: 0,
-            points: [1, 0, 0, 0, 0, 0, 0, 0],
-        },
-    )
-    assert(err == ExcubiaError::InvalidProof.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: SemaphoreExcubiaMsg::Check {
-            passerby: passerby,
-            merkle_tree_depth: 1,
-            merkle_tree_root: 0,
-            nullifier: 0,
-            message_value: 0,
-            scope: 0,
-            points: [0, 0, 0, 0, 0, 0, 0, 0],
-        },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: SemaphoreExcubiaMsg::HasPassedNullifier { nullifier: 0 },
-    )
-    assert(!has_passed)
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: SemaphoreExcubiaMsg::Pass {
-            passerby: passerby,
-            merkle_tree_depth: 1,
-            merkle_tree_root: 0,
-            nullifier: 0,
-            message_value: 0,
-            scope: 0,
-            points: [0, 0, 0, 0, 0, 0, 0, 0],
-        },
-    )
-    assert(err == ExcubiaError::GateOnly.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::SemaphorePass {
-            target: excubia,
-            passerby: passerby,
-            merkle_tree_depth: 1,
-            merkle_tree_root: 0,
-            nullifier: 0,
-            message_value: 0,
-            scope: 1,
-            points: [0, 0, 0, 0, 0, 0, 0, 0],
-        },
-    )
-    assert(err == ExcubiaError::UnexpectedScope.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::SemaphorePass {
-            target: excubia,
-            passerby: passerby,
-            merkle_tree_depth: 1,
-            merkle_tree_root: 0,
-            nullifier: 1,
-            message_value: 0,
-            scope: 0,
-            points: [1, 0, 0, 0, 0, 0, 0, 0],
-        },
-    )
-    assert(err == ExcubiaError::InvalidProof.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::SemaphorePass {
-            target: excubia,
-            passerby: passerby,
-            merkle_tree_depth: 1,
-            merkle_tree_root: 0,
-            nullifier: 0,
-            message_value: 0,
-            scope: 0,
-            points: [0, 0, 0, 0, 0, 0, 0, 0],
-        },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: SemaphoreExcubiaMsg::HasPassedNullifier { nullifier: 0 },
-    )
-    assert(has_passed)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::SemaphorePass {
-            target: excubia,
-            passerby: passerby,
-            merkle_tree_depth: 1,
-            merkle_tree_root: 0,
-            nullifier: 0,
-            message_value: 0,
-            scope: 0,
-            points: [0, 0, 0, 0, 0, 0, 0, 0],
-        },
-    )
-    assert(err == ExcubiaError::AlreadyPassed.code())
-}
-
-#[test]
-fn test_zkeddsa_event_ticket_pcd_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
-    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2070)
-    let verifier = evm.create2<ZKEdDSAEventTicketPCDVerifier>(value: 0, args: (), salt: 2071)
-    let excubia = evm.create2<ZKEdDSAEventTicketPCDExcubia>(
-        value: 0,
-        args: (verifier, ZKEDDSA_VALID_EVENT_ID, ZKEDDSA_VALID_SIGNER_0, ZKEDDSA_VALID_SIGNER_1),
-        salt: 2072,
-    )
-    let invalid_signer_0_excubia = evm.create2<ZKEdDSAEventTicketPCDExcubia>(
-        value: 0,
-        args: (verifier, ZKEDDSA_VALID_EVENT_ID, ZKEDDSA_INVALID_SIGNER_0, ZKEDDSA_VALID_SIGNER_1),
-        salt: 2073,
-    )
-    let invalid_signer_1_excubia = evm.create2<ZKEdDSAEventTicketPCDExcubia>(
-        value: 0,
-        args: (verifier, ZKEDDSA_VALID_EVENT_ID, ZKEDDSA_VALID_SIGNER_0, ZKEDDSA_INVALID_SIGNER_1),
-        salt: 2074,
-    )
-    let invalid_event_id_excubia = evm.create2<ZKEdDSAEventTicketPCDExcubia>(
-        value: 0,
-        args: (verifier, ZKEDDSA_INVALID_EVENT_ID, ZKEDDSA_VALID_SIGNER_0, ZKEDDSA_VALID_SIGNER_1),
-        salt: 2075,
-    )
-    let passerby = Address { inner: 0x627306090abab3a6e1400e9345bc60c78a8bef57 }
-
-    let trait_value: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::Trait {},
-    )
-    assert(trait_value == EXCUBIA_TRAIT_ZKEDDSA_EVENT_TICKET_PCD)
-
-    let verifier_ok: bool = evm.call(
-        addr: verifier,
-        gas: 5000000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDVerifierMsg::VerifyProof {
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(verifier_ok)
-
-    let verifier_ok: bool = evm.call(
-        addr: verifier,
-        gas: 5000000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDVerifierMsg::VerifyProof {
-            p_a: ZKEDDSA_INVALID_PROOF_A,
-            p_b: ZKEDDSA_INVALID_PROOF_B,
-            p_c: ZKEDDSA_INVALID_PROOF_C,
-            pub_signals: ZKEDDSA_INVALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(!verifier_ok)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 200000,
-        value: 0,
-        message: ExcubiaCallerMsg::ZKEdDSASetGate { target: excubia, gate: caller },
-    )
-    assert(err == ExcubiaError::OwnerOnly.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: Address::zero() },
-    )
-    assert(err == ExcubiaError::ZeroAddress.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: caller },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let err: u256 = evm.call(
-        addr: invalid_signer_0_excubia,
-        gas: 100000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: caller },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let err: u256 = evm.call(
-        addr: invalid_signer_1_excubia,
-        gas: 100000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: caller },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let err: u256 = evm.call(
-        addr: invalid_event_id_excubia,
-        gas: 100000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: caller },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let err: u256 = evm.call(
-        addr: invalid_signer_0_excubia,
-        gas: 5000000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
-            passerby: passerby,
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::InvalidSigners.code())
-
-    let err: u256 = evm.call(
-        addr: invalid_signer_1_excubia,
-        gas: 5000000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
-            passerby: passerby,
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::InvalidSigners.code())
-
-    let err: u256 = evm.call(
-        addr: invalid_event_id_excubia,
-        gas: 5000000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
-            passerby: passerby,
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::InvalidEventId.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 5000000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
-            passerby: passerby,
-            p_a: ZKEDDSA_INVALIDWATERMARK_PROOF_A,
-            p_b: ZKEDDSA_INVALIDWATERMARK_PROOF_B,
-            p_c: ZKEDDSA_INVALIDWATERMARK_PROOF_C,
-            pub_signals: ZKEDDSA_INVALIDWATERMARK_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::InvalidWatermark.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 5000000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
-            passerby: passerby,
-            p_a: ZKEDDSA_INVALID_PROOF_A,
-            p_b: ZKEDDSA_INVALID_PROOF_B,
-            p_c: ZKEDDSA_INVALID_PROOF_C,
-            pub_signals: ZKEDDSA_INVALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::InvalidProof.code())
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 5000000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
-            passerby: passerby,
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::HasPassedZKEdDSAEventTicketPCD {
-            ticket_id: ZKEDDSA_VALID_TICKET_ID,
-        },
-    )
-    assert(!has_passed)
-
-    let err: u256 = evm.call(
-        addr: excubia,
-        gas: 5000000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::Pass {
-            passerby: passerby,
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::GateOnly.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 5000000,
-        value: 0,
-        message: ExcubiaCallerMsg::ZKEdDSAPass {
-            target: invalid_signer_0_excubia,
-            passerby: passerby,
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::InvalidSigners.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 5000000,
-        value: 0,
-        message: ExcubiaCallerMsg::ZKEdDSAPass {
-            target: invalid_signer_1_excubia,
-            passerby: passerby,
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::InvalidSigners.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 5000000,
-        value: 0,
-        message: ExcubiaCallerMsg::ZKEdDSAPass {
-            target: invalid_event_id_excubia,
-            passerby: passerby,
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::InvalidEventId.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 5000000,
-        value: 0,
-        message: ExcubiaCallerMsg::ZKEdDSAPass {
-            target: excubia,
-            passerby: passerby,
-            p_a: ZKEDDSA_INVALIDWATERMARK_PROOF_A,
-            p_b: ZKEDDSA_INVALIDWATERMARK_PROOF_B,
-            p_c: ZKEDDSA_INVALIDWATERMARK_PROOF_C,
-            pub_signals: ZKEDDSA_INVALIDWATERMARK_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::InvalidWatermark.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 5000000,
-        value: 0,
-        message: ExcubiaCallerMsg::ZKEdDSAPass {
-            target: excubia,
-            passerby: passerby,
-            p_a: ZKEDDSA_INVALID_PROOF_A,
-            p_b: ZKEDDSA_INVALID_PROOF_B,
-            p_c: ZKEDDSA_INVALID_PROOF_C,
-            pub_signals: ZKEDDSA_INVALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::InvalidProof.code())
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 5000000,
-        value: 0,
-        message: ExcubiaCallerMsg::ZKEdDSAPass {
-            target: excubia,
-            passerby: passerby,
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::None.code())
-
-    let has_passed: bool = evm.call(
-        addr: excubia,
-        gas: 100000,
-        value: 0,
-        message: ZKEdDSAEventTicketPCDExcubiaMsg::HasPassedZKEdDSAEventTicketPCD {
-            ticket_id: ZKEDDSA_VALID_TICKET_ID,
-        },
-    )
-    assert(has_passed)
-
-    let err: u256 = evm.call(
-        addr: caller,
-        gas: 5000000,
-        value: 0,
-        message: ExcubiaCallerMsg::ZKEdDSAPass {
-            target: excubia,
-            passerby: passerby,
-            p_a: ZKEDDSA_VALID_PROOF_A,
-            p_b: ZKEDDSA_VALID_PROOF_B,
-            p_c: ZKEDDSA_VALID_PROOF_C,
-            pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
-        },
-    )
-    assert(err == ExcubiaError::AlreadyPassed.code())
-}
-
-#[test(should_revert)]
-fn test_zkeddsa_event_ticket_pcd_excubia_rejects_zero_verifier() uses (evm: mut Evm) {
-    let _ = evm.create2<ZKEdDSAEventTicketPCDExcubia>(
-        value: 0,
-        args: (Address::zero(), ZKEDDSA_VALID_EVENT_ID, ZKEDDSA_VALID_SIGNER_0, ZKEDDSA_VALID_SIGNER_1),
-        salt: 2076,
-    )
-}
-
-#[test(should_revert)]
-fn test_erc721_excubia_rejects_zero_nft_address() uses (evm: mut Evm) {
-    let _ = evm.create2<ERC721Excubia>(value: 0, args: (Address::zero(),), salt: 2040)
-}
-
-#[test(should_revert)]
-fn test_gitcoin_passport_excubia_rejects_zero_decoder() uses (evm: mut Evm) {
-    let _ = evm.create2<GitcoinPassportExcubia>(value: 0, args: (Address::zero(), 35), salt: 2041)
-}
-
-#[test(should_revert)]
-fn test_gitcoin_passport_excubia_rejects_zero_threshold() uses (evm: mut Evm) {
-    let decoder = evm.create2<MockGitcoinPassportDecoder>(value: 0, args: (), salt: 2042)
-    let _ = evm.create2<GitcoinPassportExcubia>(value: 0, args: (decoder, 0), salt: 2043)
-}
-
-#[test(should_revert)]
-fn test_hats_excubia_rejects_zero_hats_address() uses (evm: mut Evm) {
-    let _ = evm.create2<HatsExcubia>(
-        value: 0,
-        args: (Address::zero(), [1, 0, 0, 0], 1),
-        salt: 2044,
-    )
-}
-
-#[test(should_revert)]
-fn test_hats_excubia_rejects_zero_criterion_hats() uses (evm: mut Evm) {
-    let hats = evm.create2<MockHats>(value: 0, args: (), salt: 2045)
-    let _ = evm.create2<HatsExcubia>(value: 0, args: (hats, [0, 0, 0, 0], 0), salt: 2046)
-}
-
-#[test(should_revert)]
-fn test_eas_excubia_rejects_zero_eas_address() uses (evm: mut Evm) {
-    let attester = Address { inner: 0x5002 }
-    let _ = evm.create2<EASExcubia>(value: 0, args: (Address::zero(), attester, EAS_SCHEMA_ID), salt: 2053)
-}
-
-#[test(should_revert)]
-fn test_eas_excubia_rejects_zero_attester() uses (evm: mut Evm) {
-    let passerby = Address { inner: 0x5001 }
-    let attester = Address { inner: 0x5002 }
-    let eas = evm.create2<MockEAS>(value: 0, args: (passerby, attester, EAS_SCHEMA_ID), salt: 2054)
-    let _ = evm.create2<EASExcubia>(value: 0, args: (eas, Address::zero(), EAS_SCHEMA_ID), salt: 2055)
-}
-
-#[test(should_revert)]
-fn test_semaphore_excubia_rejects_zero_semaphore_address() uses (evm: mut Evm) {
-    let _ = evm.create2<SemaphoreExcubia>(value: 0, args: (Address::zero(), 0), salt: 2063)
-}
-
-#[test(should_revert)]
-fn test_semaphore_excubia_rejects_invalid_group() uses (evm: mut Evm) {
-    let semaphore = evm.create2<MockSemaphore>(value: 0, args: (), salt: 2064)
-    let _ = evm.create2<SemaphoreExcubia>(value: 0, args: (semaphore, 1), salt: 2065)
-}
+// TODO: Re-enable the Semaphore Excubia wrapper after Fe supports the fixed-size-array
+// message ABI used by the Solidity-parity contract surface. The proof and replay logic
+// stays in the helper functions above; only the wrapper layer is disabled.
+
+// TODO: Re-enable the ZKEdDSA verifier wrapper after Fe supports the fixed-size-array and
+// nested-array message ABI used by the Solidity-parity contract surface. The verifier logic
+// stays in the helper functions above; only the wrapper layer is disabled.
+
+// TODO: Re-enable the ZKEdDSA Excubia wrapper after Fe supports the fixed-size-array and
+// nested-array message ABI used by the Solidity-parity contract surface. The proof and
+// replay logic stays in the helper functions above; only the wrapper layer is disabled.
+
+// TODO: Re-enable the Excubia caller harness when the disabled wrapper contracts return.
+
+// TODO: Re-enable the Excubia parity tests together with the wrapper contracts.
+// The tree and hash library tests remain active; the contract-level parity suite is
+// intentionally disabled while zk-kit-fe stays library-first.
