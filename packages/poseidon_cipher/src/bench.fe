@@ -1,0 +1,21 @@
+use std::abi::sol
+
+msg CipherMsg {
+    #[selector = sol("encryptBlock(uint256[3],uint256,uint256,uint256)")]
+    Encrypt { plaintext: [u256; 3], key_x: u256, key_y: u256, nonce: u256 } -> [u256; 4],
+
+    #[selector = sol("decryptBlock(uint256[4],uint256,uint256,uint256)")]
+    Decrypt { ciphertext: [u256; 4], key_x: u256, key_y: u256, nonce: u256 } -> [u256; 3],
+}
+
+pub contract PoseidonCipherBench {
+    init() {}
+    recv CipherMsg {
+        Encrypt { plaintext, key_x, key_y, nonce } -> [u256; 4] {
+            super::encrypt_block(plaintext, key_x, key_y, nonce)
+        }
+        Decrypt { ciphertext, key_x, key_y, nonce } -> [u256; 3] {
+            super::decrypt_block(ciphertext, key_x, key_y, nonce)
+        }
+    }
+}

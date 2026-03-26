@@ -1,0 +1,15 @@
+use std::abi::sol
+
+msg SmtMsg {
+    #[selector = sol("verifyMembership(uint256,uint256,uint256[32],uint256,uint256)")]
+    VerifyMembership { key: u256, value: u256, siblings: [u256; 32], depth: u256, root: u256 } -> bool,
+}
+
+pub contract SmtBench {
+    init() {}
+    recv SmtMsg {
+        VerifyMembership { key, value, siblings, depth, root } -> bool {
+            super::verify_membership<32>(key, value, siblings, depth as usize, root)
+        }
+    }
+}

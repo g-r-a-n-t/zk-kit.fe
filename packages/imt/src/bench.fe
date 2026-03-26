@@ -1,0 +1,21 @@
+use std::abi::sol
+
+msg ImtMsg {
+    #[selector = sol("computeRoot(uint256,uint256,uint256[32])")]
+    ComputeRoot { leaf: u256, path_index: u256, siblings: [u256; 32] } -> u256,
+
+    #[selector = sol("verify(uint256,uint256,uint256[32],uint256)")]
+    Verify { leaf: u256, path_index: u256, siblings: [u256; 32], root: u256 } -> bool,
+}
+
+pub contract ImtBench {
+    init() {}
+    recv ImtMsg {
+        ComputeRoot { leaf, path_index, siblings } -> u256 {
+            super::compute_root<32>(leaf, path_index, siblings)
+        }
+        Verify { leaf, path_index, siblings, root } -> bool {
+            super::verify<32>(leaf, path_index, siblings, root)
+        }
+    }
+}
