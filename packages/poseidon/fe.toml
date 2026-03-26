@@ -1,0 +1,6 @@
+[ingot]
+name = "poseidon"
+version = "0.1.0"
+
+[dependencies]
+utils = { path = "../utils" }

@@ -1,0 +1,157 @@
+/// Baby JubJub elliptic curve operations.
+///
+/// Baby JubJub is a twisted Edwards curve defined over the BN254 scalar
+/// field. It is the curve used by EdDSA-Poseidon, ECDH, and most
+/// privacy protocols in the Ethereum ZK ecosystem.
+///
+/// Curve equation: a*x^2 + y^2 = 1 + d*x^2*y^2
+/// where a = 168700, d = 168696
+
+use std::evm::ops::{addmod, mulmod}
+
+/// BN254 scalar field (= Baby JubJub base field)
+pub const FIELD: u256 = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001
+
+/// Curve parameter a
+pub const A: u256 = 168700
+
+/// Curve parameter d
+pub const D: u256 = 168696
+
+/// Generator point (base point) of the Baby JubJub subgroup.
+pub const BASE_X: u256 = 5299619240641551281634865583518297030282874472190772894086521144482721001553
+pub const BASE_Y: u256 = 16950150798460657717958625567821834550301663161624707787222815936182638968203
+
+/// Subgroup order
+pub const SUBORDER: u256 = 2736030358979909402780800718157159386076813972158567259200215660948447373041
+
+/// A point on the Baby JubJub curve.
+pub struct Point {
+    pub x: u256,
+    pub y: u256,
+}
+
+/// The identity point (neutral element for addition).
+pub fn identity() -> Point {
+    Point { x: 0, y: 1 }
+}
+
+/// The generator (base) point.
+pub fn base_point() -> Point {
+    Point { x: BASE_X, y: BASE_Y }
+}
+
+/// Add two points on the Baby JubJub curve.
+///
+/// Uses the twisted Edwards addition formula:
+///   x3 = (x1*y2 + y1*x2) / (1 + d*x1*x2*y1*y2)
+///   y3 = (y1*y2 - a*x1*x2) / (1 - d*x1*x2*y1*y2)
+pub fn add(p: Point, q: Point) -> Point {
+    let x1y2 = mulmod(p.x, q.y, FIELD)
+    let y1x2 = mulmod(p.y, q.x, FIELD)
+    let x1x2 = mulmod(p.x, q.x, FIELD)
+    let y1y2 = mulmod(p.y, q.y, FIELD)
+
+    let dx1x2y1y2 = mulmod(D, mulmod(x1x2, y1y2, FIELD), FIELD)
+
+    // Numerators
+    let x_num = addmod(x1y2, y1x2, FIELD)
+    let y_num = addmod(y1y2, FIELD - mulmod(A, x1x2, FIELD), FIELD)
+
+    // Denominators
+    let x_den = addmod(1, dx1x2y1y2, FIELD)
+    let y_den = addmod(1, FIELD - dx1x2y1y2, FIELD)
+
+    // Invert denominators via modexp precompile
+    let x_den_inv = utils::field::inv<FIELD>(x_den)
+    let y_den_inv = utils::field::inv<FIELD>(y_den)
+
+    Point {
+        x: mulmod(x_num, x_den_inv, FIELD),
+        y: mulmod(y_num, y_den_inv, FIELD),
+    }
+}
+
+/// Double a point (add it to itself).
+pub fn double(p: Point) -> Point {
+    add(p, p)
+}
+
+/// Scalar multiplication via double-and-add.
+///
+/// Computes scalar * point using the standard binary method.
+/// The scalar must be < SUBORDER.
+pub fn mul_scalar(point: Point, scalar: u256) -> Point {
+    let mut rx: u256 = 0
+    let mut ry: u256 = 1
+    let mut cx: u256 = point.x
+    let mut cy: u256 = point.y
+    let mut s = scalar
+
+    while s > 0 {
+        if s & 1 == 1 {
+            let r = add(Point { x: rx, y: ry }, Point { x: cx, y: cy })
+            rx = r.x
+            ry = r.y
+        }
+        let d = double(Point { x: cx, y: cy })
+        cx = d.x
+        cy = d.y
+        s = s >> 1
+    }
+    Point { x: rx, y: ry }
+}
+
+/// Negate a point: -(x, y) = (-x, y) on twisted Edwards curves.
+pub fn negate(p: Point) -> Point {
+    Point {
+        x: if p.x == 0 { 0 } else { FIELD - p.x },
+        y: p.y,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_identity_addition() {
+    let base = base_point()
+    let result = add(base, identity())
+    assert(result.x == base.x)
+    assert(result.y == base.y)
+}
+
+#[test]
+fn test_negate_add_is_identity() {
+    let base = base_point()
+    let neg = negate(base)
+    let result = add(base, neg)
+    assert(result.x == 0)
+    assert(result.y == 1)
+}
+
+#[test]
+fn test_scalar_mul_one() {
+    let base = base_point()
+    let result = mul_scalar(base, 1)
+    assert(result.x == base.x)
+    assert(result.y == base.y)
+}
+
+#[test]
+fn test_scalar_mul_two_equals_double() {
+    let base = base_point()
+    let doubled = double(base)
+    let mul2 = mul_scalar(base, 2)
+    assert(doubled.x == mul2.x)
+    assert(doubled.y == mul2.y)
+}
+
+#[test]
+fn test_scalar_mul_order_is_identity() {
+    let base = base_point()
+    let result = mul_scalar(base, SUBORDER)
+    assert(result.x == 0)
+    assert(result.y == 1)
+}

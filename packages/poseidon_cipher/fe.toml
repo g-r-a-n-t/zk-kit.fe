@@ -1,0 +1,7 @@
+[ingot]
+name = "poseidon_cipher"
+version = "0.1.0"
+
+[dependencies]
+poseidon = { path = "../poseidon" }
+baby_jubjub = { path = "../baby_jubjub" }

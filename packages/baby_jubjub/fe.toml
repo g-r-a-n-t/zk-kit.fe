@@ -1,0 +1,6 @@
+[ingot]
+name = "baby_jubjub"
+version = "0.1.0"
+
+[dependencies]
+utils = { path = "../utils" }

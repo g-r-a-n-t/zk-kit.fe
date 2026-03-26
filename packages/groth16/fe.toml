@@ -1,0 +1,6 @@
+[ingot]
+name = "groth16"
+version = "0.1.0"
+
+[dependencies]
+ec = { path = "../ec" }

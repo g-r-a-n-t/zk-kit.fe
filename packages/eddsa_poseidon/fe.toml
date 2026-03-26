@@ -1,0 +1,8 @@
+[ingot]
+name = "eddsa_poseidon"
+version = "0.1.0"
+
+[dependencies]
+baby_jubjub = { path = "../baby_jubjub" }
+poseidon = { path = "../poseidon" }
+utils = { path = "../utils" }

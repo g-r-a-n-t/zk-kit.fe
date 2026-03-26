@@ -1,0 +1,59 @@
+/// LazyTower hash chain.
+///
+/// A multi-level structure where each level accumulates elements into
+/// groups of width W. When a group is full, its hash is promoted to the
+/// next level. This creates a tower of hash chains that supports efficient
+/// membership proofs with O(H * W) proof size where H is the tower height.
+///
+/// Based on the TypeScript and Circom zk-kit implementations by LCamel.
+
+use poseidon::{hash as poseidon_hash}
+
+/// Verify a LazyTower membership proof.
+///
+/// The proof consists of `H` levels. At each level, the prover provides
+/// the sibling elements within the group and the chain hash up to that
+/// group. The verifier recomputes the group hash and chain hash at each
+/// level, then checks the final chain hash matches the tower root.
+///
+/// `element` - the leaf element to prove membership of
+/// `level_siblings` - at each level, the W-1 siblings within the group
+/// `level_chains` - at each level, the chain hash before this group
+/// `H` - tower height (number of levels)
+/// `W` - group width (elements per group)
+pub fn verify_membership<const H: usize, const W: usize>(
+    element: u256,
+    level_indices: [usize; H],
+    level_siblings: [[u256; W]; H],
+    level_chains: [u256; H],
+    root: u256,
+) -> bool {
+    let mut current = element
+
+    let mut level: usize = 0
+    while level < H {
+        // Reconstruct the group hash at this level.
+        // The element is at position level_indices[level] within the group.
+        // Hash all W elements in the group together via a chain of Poseidon hashes.
+        let idx = level_indices[level]
+        let mut group_hash: u256 = 0
+
+        let mut j: usize = 0
+        let mut elem_idx: usize = 0
+        while j < W {
+            let val = if j == idx { current } else {
+                let s = level_siblings[level][elem_idx]
+                elem_idx = elem_idx + 1
+                s
+            }
+            group_hash = poseidon_hash(group_hash, val)
+            j = j + 1
+        }
+
+        // Chain hash: H(prev_chain, group_hash)
+        current = poseidon_hash(level_chains[level], group_hash)
+        level = level + 1
+    }
+
+    current == root
+}

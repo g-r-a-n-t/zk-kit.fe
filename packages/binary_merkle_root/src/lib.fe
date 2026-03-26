@@ -1,0 +1,107 @@
+/// Binary Merkle root calculation.
+///
+/// Calculates the root of a binary Merkle tree given a leaf, its depth,
+/// the path indices, and sibling hashes. Compatible with LeanIMT trees.
+///
+/// This is the same algorithm used across zk-kit in Circom, Noir, and
+/// Cairo. The MAX_DEPTH const generic allows the circuit/contract to be
+/// parameterized at compile time while accepting dynamic depths at runtime.
+
+use poseidon::{hash as poseidon_hash}
+
+/// Compute the Merkle root using Poseidon hashing.
+///
+/// `indices[i] == 0` means the node is the left child at level i.
+/// `indices[i] == 1` means the node is the right child at level i.
+/// Levels beyond `depth` are ignored.
+pub fn binary_merkle_root<const MAX_DEPTH: usize>(
+    leaf: u256,
+    depth: usize,
+    indices: [u256; MAX_DEPTH],
+    siblings: [u256; MAX_DEPTH],
+) -> u256 {
+    let mut node = leaf
+
+    let mut i: usize = 0
+    while i < MAX_DEPTH {
+        if i < depth {
+            let sibling = siblings[i]
+            if indices[i] == 0 {
+                node = poseidon_hash(node, sibling)
+            } else {
+                node = poseidon_hash(sibling, node)
+            }
+        }
+        i = i + 1
+    }
+    node
+}
+
+/// Verify that a leaf belongs to a tree with the given root.
+pub fn verify<const MAX_DEPTH: usize>(
+    leaf: u256,
+    depth: usize,
+    indices: [u256; MAX_DEPTH],
+    siblings: [u256; MAX_DEPTH],
+    root: u256,
+) -> bool {
+    binary_merkle_root<MAX_DEPTH>(leaf, depth, indices, siblings) == root
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_depth_zero() {
+    let leaf: u256 = 42
+    let root = binary_merkle_root<32>(leaf, 0, [0; 32], [0; 32])
+    assert(root == leaf)
+}
+
+#[test]
+fn test_depth_one_left() {
+    let a: u256 = 1
+    let b: u256 = 2
+    let expected = poseidon_hash(a, b)
+
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = b
+    let root = binary_merkle_root<32>(a, 1, [0; 32], siblings)
+    assert(root == expected)
+}
+
+#[test]
+fn test_depth_one_right() {
+    let a: u256 = 1
+    let b: u256 = 2
+    let expected = poseidon_hash(a, b)
+
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = a
+    let mut indices: [u256; 32] = [0; 32]
+    indices[0] = 1
+    let root = binary_merkle_root<32>(b, 1, indices, siblings)
+    assert(root == expected)
+}
+
+#[test]
+fn test_verify_valid() {
+    let a: u256 = 1
+    let b: u256 = 2
+    let expected = poseidon_hash(a, b)
+
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = b
+    assert(verify<32>(a, 1, [0; 32], siblings, expected))
+}
+
+#[test]
+fn test_verify_invalid() {
+    let a: u256 = 1
+    let b: u256 = 2
+
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = b
+    assert(verify<32>(a, 1, [0; 32], siblings, 999) == false)
+}

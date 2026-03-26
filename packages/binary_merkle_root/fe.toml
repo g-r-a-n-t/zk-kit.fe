@@ -1,0 +1,6 @@
+[ingot]
+name = "binary_merkle_root"
+version = "0.1.0"
+
+[dependencies]
+poseidon = { path = "../poseidon" }

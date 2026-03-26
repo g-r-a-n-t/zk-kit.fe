@@ -1,0 +1,51 @@
+/// Elliptic Curve Diffie-Hellman (ECDH) on Baby JubJub.
+///
+/// Generates a shared secret from a private key and a public key.
+/// The shared secret is the x-coordinate of the resulting point.
+///
+/// Based on the Circom and Noir zk-kit implementations.
+
+use baby_jubjub::{Point, mul_scalar, base_point}
+
+/// Derive a public key from a private key.
+/// public_key = private_key * G (base point)
+pub fn derive_public_key(private_key: u256) -> Point {
+    mul_scalar(base_point(), private_key)
+}
+
+/// Compute the ECDH shared secret.
+/// shared_secret = private_key * public_key
+/// Returns the x-coordinate of the resulting point.
+pub fn generate_shared_key(private_key: u256, public_key: Point) -> u256 {
+    let shared_point = mul_scalar(public_key, private_key)
+    shared_point.x
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_ecdh_symmetry() {
+    // Alice and Bob should derive the same shared secret
+    let alice_sk: u256 = 7
+    let bob_sk: u256 = 13
+
+    let alice_pk = derive_public_key(alice_sk)
+    let bob_pk = derive_public_key(bob_sk)
+
+    let alice_shared = generate_shared_key(alice_sk, bob_pk)
+    let bob_shared = generate_shared_key(bob_sk, alice_pk)
+
+    assert(alice_shared == bob_shared)
+}
+
+#[test]
+fn test_public_key_derivation() {
+    let sk: u256 = 1
+    let pk = derive_public_key(sk)
+    // sk=1 means pk = base_point
+    let base = base_point()
+    assert(pk.x == base.x)
+    assert(pk.y == base.y)
+}

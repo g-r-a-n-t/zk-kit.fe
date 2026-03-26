@@ -1,0 +1,116 @@
+/// Incremental Merkle Tree (IMT) proof verification.
+///
+/// A standard binary Incremental Merkle Tree with a fixed depth. Empty
+/// leaves are filled with a predetermined "zero value", and each level
+/// has a precomputed "zero hash" (the hash of two zero children).
+///
+/// This implementation provides proof verification and root computation.
+/// For the optimized variant without zero-padding, see the `merkle`
+/// package (LeanIMT).
+///
+/// Based on the TypeScript, Solidity, and Rust zk-kit implementations.
+
+use poseidon::{hash as poseidon_hash}
+
+/// Precompute the zero hashes for each level of the tree.
+/// zero_hashes[0] = hash(zero_value, zero_value)
+/// zero_hashes[i] = hash(zero_hashes[i-1], zero_hashes[i-1])
+pub fn compute_zero_hashes<const DEPTH: usize>(zero_value: u256) -> [u256; DEPTH] {
+    let mut zeros: [u256; DEPTH] = [0; DEPTH]
+    let mut current = zero_value
+
+    let mut i: usize = 0
+    while i < DEPTH {
+        zeros[i] = current
+        current = poseidon_hash(current, current)
+        i = i + 1
+    }
+    zeros
+}
+
+/// Compute the Merkle root from a leaf and its proof.
+///
+/// `path_index` encodes the leaf position: bit i determines whether
+/// the node is left (0) or right (1) at level i.
+pub fn compute_root<const DEPTH: usize>(
+    leaf: u256,
+    path_index: u256,
+    siblings: [u256; DEPTH],
+) -> u256 {
+    let mut node = leaf
+
+    let mut i: usize = 0
+    while i < DEPTH {
+        let sibling = siblings[i]
+        let bit = (path_index >> (i as u256)) & 1
+        if bit == 0 {
+            node = poseidon_hash(node, sibling)
+        } else {
+            node = poseidon_hash(sibling, node)
+        }
+        i = i + 1
+    }
+    node
+}
+
+/// Verify that a leaf is at the given position in a tree with the given root.
+pub fn verify<const DEPTH: usize>(
+    leaf: u256,
+    path_index: u256,
+    siblings: [u256; DEPTH],
+    root: u256,
+) -> bool {
+    compute_root<DEPTH>(leaf, path_index, siblings) == root
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_zero_hashes_deterministic() {
+    let z1 = compute_zero_hashes<4>(0)
+    let z2 = compute_zero_hashes<4>(0)
+    assert(z1[0] == z2[0])
+    assert(z1[3] == z2[3])
+}
+
+#[test]
+fn test_zero_hashes_chain() {
+    let zeros = compute_zero_hashes<3>(0)
+    // zeros[0] = 0 (the zero value itself)
+    assert(zeros[0] == 0)
+    // zeros[1] = hash(0, 0)
+    assert(zeros[1] == poseidon_hash(0, 0))
+    // zeros[2] = hash(hash(0,0), hash(0,0))
+    let h = poseidon_hash(0, 0)
+    assert(zeros[2] == poseidon_hash(h, h))
+}
+
+#[test]
+fn test_single_leaf_tree() {
+    // Depth-1 tree with one real leaf on the left, zero on the right
+    let leaf: u256 = 42
+    let zero_hash = poseidon_hash(0, 0)
+    let expected_root = poseidon_hash(leaf, 0)
+
+    // Actually: sibling at level 0 is the zero value (0), not the zero hash
+    let siblings: [u256; 1] = [0]
+    let root = compute_root<1>(leaf, 0, siblings)
+    assert(root == expected_root)
+}
+
+#[test]
+fn test_verify_correct() {
+    let leaf: u256 = 42
+    let sibling: u256 = 99
+    let root = poseidon_hash(leaf, sibling)
+    assert(verify<1>(leaf, 0, [sibling], root))
+}
+
+#[test]
+fn test_verify_wrong_root() {
+    let leaf: u256 = 42
+    let sibling: u256 = 99
+    assert(verify<1>(leaf, 0, [sibling], 123) == false)
+}

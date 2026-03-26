@@ -1,0 +1,6 @@
+[ingot]
+name = "ecdh"
+version = "0.1.0"
+
+[dependencies]
+baby_jubjub = { path = "../baby_jubjub" }

@@ -1,0 +1,97 @@
+/// Lazy Incremental Merkle Tree.
+///
+/// A variant of the Incremental Merkle Tree that defers hash computations.
+/// Instead of updating the full path from leaf to root on every insert,
+/// it stores "pending" nodes and only computes hashes when the root is
+/// queried or a proof is needed.
+///
+/// This reduces gas cost for batch insertions since intermediate root
+/// computations are skipped. Based on the Solidity zk-kit implementation.
+
+use poseidon::{hash as poseidon_hash}
+
+/// Compute the root of a lazy IMT given its current state.
+///
+/// `elements` contains the known nodes at each level. If a level has
+/// a pending element, it's stored there; otherwise it's the zero hash.
+/// `num_leaves` is the current number of inserted leaves.
+pub fn compute_root<const DEPTH: usize>(
+    elements: [u256; DEPTH],
+    num_leaves: u256,
+    zero_hashes: [u256; DEPTH],
+) -> u256 {
+    let mut node: u256 = 0
+    let mut n = num_leaves
+
+    let mut i: usize = 0
+    while i < DEPTH {
+        if n & 1 == 1 {
+            // Odd: this level has a pending element
+            node = poseidon_hash(elements[i], node)
+        } else {
+            if node == 0 {
+                node = zero_hashes[i]
+            } else {
+                node = poseidon_hash(node, zero_hashes[i])
+            }
+        }
+        n = n >> 1
+        i = i + 1
+    }
+    node
+}
+
+/// Insert a leaf into the lazy IMT state.
+///
+/// Returns the updated elements array and new leaf count.
+/// The root is NOT computed here -- call `compute_root` when needed.
+pub fn insert<const DEPTH: usize>(
+    leaf: u256,
+    elements: [u256; DEPTH],
+    num_leaves: u256,
+) -> ([u256; DEPTH], u256) {
+    let mut new_elements = elements
+    let mut node = leaf
+    let mut n = num_leaves
+
+    let mut i: usize = 0
+    while i < DEPTH {
+        if n & 1 == 0 {
+            // Even: store the node at this level and stop
+            new_elements[i] = node
+            // Remaining levels keep existing values
+            return (new_elements, num_leaves + 1)
+        } else {
+            // Odd: hash with the existing element and carry up
+            node = poseidon_hash(elements[i], node)
+        }
+        n = n >> 1
+        i = i + 1
+    }
+
+    (new_elements, num_leaves + 1)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_insert_first_leaf() {
+    let elements: [u256; 4] = [0; 4]
+    let (new_elements, count) = insert<4>(42, elements, 0)
+    assert(count == 1)
+    assert(new_elements[0] == 42)
+}
+
+#[test]
+fn test_insert_second_leaf() {
+    // After first insert: elements[0] = 42
+    let mut elements: [u256; 4] = [0; 4]
+    elements[0] = 42
+    let (new_elements, count) = insert<4>(99, elements, 1)
+    assert(count == 2)
+    // Second leaf hashes with first at level 0, stores at level 1
+    let expected = poseidon_hash(42, 99)
+    assert(new_elements[1] == expected)
+}

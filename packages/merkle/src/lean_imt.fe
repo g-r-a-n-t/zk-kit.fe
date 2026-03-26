@@ -1,0 +1,97 @@
+use std::evm::ops
+use poseidon::{hash as poseidon_hash, PRIME}
+
+/// Lean Incremental Merkle Tree.
+///
+/// An optimized binary Merkle tree that eliminates zero-hash padding.
+/// The tree depth grows dynamically as leaves are added. This is the
+/// recommended Merkle tree variant for new projects in the zk-kit
+/// ecosystem.
+///
+/// This implementation stores tree state on-chain via Fe's storage
+/// system. It uses Poseidon hashing over BN254 for ZK-friendliness.
+
+/// Maximum supported tree depth.
+const MAX_DEPTH: usize = 32
+
+/// Compute the Poseidon-based Merkle root from a leaf and its siblings.
+/// This is the core proof verification function for LeanIMT.
+pub fn verify_proof(
+    leaf: u256,
+    siblings: [u256; 32],
+    path_indices: [u256; 32],
+    depth: usize,
+) -> u256 {
+    let mut node = leaf
+
+    let mut i: usize = 0
+    while i < depth {
+        let sibling = siblings[i]
+        if path_indices[i] == 0 {
+            // Current node is on the left
+            node = poseidon_hash(node, sibling)
+        } else {
+            // Current node is on the right
+            node = poseidon_hash(sibling, node)
+        }
+        i = i + 1
+    }
+    node
+}
+
+/// Verify that a proof yields the expected root.
+pub fn verify(
+    leaf: u256,
+    siblings: [u256; 32],
+    path_indices: [u256; 32],
+    depth: usize,
+    root: u256,
+) -> bool {
+    verify_proof(leaf, siblings, path_indices, depth) == root
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_single_leaf_is_root() {
+    let leaf: u256 = 42
+    let siblings: [u256; 32] = [0; 32]
+    let path_indices: [u256; 32] = [0; 32]
+    // Depth 0: the leaf itself is the root
+    let root = verify_proof(leaf, siblings, path_indices, 0)
+    assert(root == leaf)
+}
+
+#[test]
+fn test_two_leaves() {
+    let leaf_a: u256 = 1
+    let leaf_b: u256 = 2
+    let expected_root = poseidon_hash(leaf_a, leaf_b)
+
+    // Prove leaf_a (left child)
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = leaf_b
+    let mut path_indices: [u256; 32] = [0; 32]
+    path_indices[0] = 0  // left
+
+    let root = verify_proof(leaf_a, siblings, path_indices, 1)
+    assert(root == expected_root)
+}
+
+#[test]
+fn test_two_leaves_right_proof() {
+    let leaf_a: u256 = 1
+    let leaf_b: u256 = 2
+    let expected_root = poseidon_hash(leaf_a, leaf_b)
+
+    // Prove leaf_b (right child)
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = leaf_a
+    let mut path_indices: [u256; 32] = [0; 32]
+    path_indices[0] = 1  // right
+
+    let root = verify_proof(leaf_b, siblings, path_indices, 1)
+    assert(root == expected_root)
+}

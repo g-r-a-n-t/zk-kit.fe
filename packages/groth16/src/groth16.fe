@@ -1,0 +1,55 @@
+use ec::bn254::{G1Point, G2Point, ec_add, ec_mul, negate, ec_pairing_4}
+use std::evm::ops
+
+/// Groth16 proof verification on BN254.
+///
+/// The snarkJS template generates 165 lines of pure assembly per circuit.
+/// Each circuit gets a fresh Solidity file with hardcoded verification keys
+/// and all EC operations done via raw mstore/staticcall.
+///
+/// Fe version: the verifier is a reusable function parameterized by a
+/// VerifyingKey struct. The same code works for any circuit -- swap the
+/// key, not the verifier.
+
+/// BN254 scalar field order.
+const SCALAR_FIELD: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+pub struct VerifyingKey {
+    pub alpha1: G1Point,
+    pub beta2: G2Point,
+    pub gamma2: G2Point,
+    pub delta2: G2Point,
+    pub ic: [G1Point; 2],
+}
+
+pub struct Proof {
+    pub a: G1Point,
+    pub b: G2Point,
+    pub c: G1Point,
+}
+
+/// Verify a Groth16 proof with 1 public input.
+///
+/// Checks: e(-A, B) * e(alpha, beta) * e(vk_x, gamma) * e(C, delta) == 1
+/// where vk_x = IC[0] + input[0] * IC[1]
+pub fn verify(vk: VerifyingKey, proof: Proof, input: u256) -> bool {
+    // Validate input is in the scalar field
+    if input >= SCALAR_FIELD {
+        ops::revert(0, 0)
+    }
+
+    // Compute vk_x = IC[0] + input * IC[1]
+    let mul_result = ec_mul(vk.ic[1], input)
+    let vk_x = ec_add(vk.ic[0], mul_result)
+
+    // Negate proof.A for the pairing check
+    let neg_a = negate(proof.a)
+
+    // Pairing check: e(-A, B) * e(alpha, beta) * e(vk_x, gamma) * e(C, delta) == 1
+    ec_pairing_4(
+        neg_a, proof.b,
+        vk.alpha1, vk.beta2,
+        vk_x, vk.gamma2,
+        proof.c, vk.delta2,
+    )
+}

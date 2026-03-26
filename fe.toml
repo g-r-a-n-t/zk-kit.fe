@@ -1,0 +1,20 @@
+[workspace]
+name = "zk-kit-fe"
+version = "0.1.0"
+members = [
+    "packages/utils",
+    "packages/ec",
+    "packages/poseidon",
+    "packages/merkle",
+    "packages/binary_merkle_root",
+    "packages/smt",
+    "packages/imt",
+    "packages/lazy_imt",
+    "packages/lazytower",
+    "packages/baby_jubjub",
+    "packages/eddsa_poseidon",
+    "packages/ecdh",
+    "packages/poseidon_cipher",
+    "packages/poseidon_proof",
+    "packages/groth16",
+]

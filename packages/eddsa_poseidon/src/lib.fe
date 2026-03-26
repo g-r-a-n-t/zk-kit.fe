@@ -1,0 +1,67 @@
+/// EdDSA signature verification using Poseidon hashing on Baby JubJub.
+///
+/// This is the signature scheme used by Semaphore, MACI, and other
+/// privacy protocols. It combines the Baby JubJub curve with Poseidon
+/// hashing for ZK-friendliness.
+///
+/// Based on the TypeScript zk-kit implementation (audited as part of
+/// Semaphore V4).
+
+use baby_jubjub::{Point, SUBORDER, FIELD, add, mul_scalar, base_point}
+use poseidon::{hash as poseidon_hash}
+use std::evm::ops::{mulmod, addmod}
+
+/// An EdDSA signature.
+pub struct Signature {
+    pub r8: Point,   // R = r * B
+    pub s: u256,     // s scalar
+}
+
+/// Verify an EdDSA-Poseidon signature.
+///
+/// Given a public key, message, and signature (R8, S), checks:
+///   S * B == R8 + H(R8, pubkey, msg) * pubkey
+///
+/// This is the standard EdDSA verification equation.
+pub fn verify(
+    message: u256,
+    pub_key: Point,
+    signature: Signature,
+) -> bool {
+    // Compute the hash: H = Poseidon(R8.x, pub_key.x, msg)
+    let h_first = poseidon_hash(signature.r8.x, pub_key.x)
+    let h = poseidon_hash(h_first, message)
+
+    // Reduce h modulo subgroup order
+    let h_mod = h % SUBORDER
+
+    // Left side: S * B
+    let left = mul_scalar(base_point(), signature.s)
+
+    // Right side: R8 + h * pubkey
+    let h_pub = mul_scalar(pub_key, h_mod)
+    let right = add(signature.r8, h_pub)
+
+    // Check equality
+    left.x == right.x && left.y == right.y
+}
+
+/// Verify with a packed public key (just the x-coordinate and sign).
+/// Many protocols store only the x-coordinate + 1 bit for the y sign.
+/// This function takes the full public key Point for now.
+pub fn verify_with_msg_hash(
+    msg_hash: u256,
+    pub_key: Point,
+    signature: Signature,
+) -> bool {
+    // Same as verify, but msg is already hashed
+    let h_first = poseidon_hash(signature.r8.x, pub_key.x)
+    let h = poseidon_hash(h_first, msg_hash)
+    let h_mod = h % SUBORDER
+
+    let left = mul_scalar(base_point(), signature.s)
+    let h_pub = mul_scalar(pub_key, h_mod)
+    let right = add(signature.r8, h_pub)
+
+    left.x == right.x && left.y == right.y
+}

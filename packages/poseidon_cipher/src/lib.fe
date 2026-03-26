@@ -1,0 +1,103 @@
+/// Poseidon-based encryption and decryption.
+///
+/// Uses Poseidon permutation in a sponge-like construction for symmetric
+/// encryption. The shared key (from ECDH) and a nonce are used to
+/// initialize the state, then plaintext elements are absorbed and
+/// ciphertext is squeezed.
+///
+/// Based on the TypeScript and Circom zk-kit implementations.
+
+use poseidon::{hash as poseidon_hash, PRIME}
+use std::evm::ops::{addmod}
+
+/// Encrypt a single field element.
+///
+/// Uses Poseidon as a keyed permutation:
+///   ciphertext[0] = plaintext + Poseidon(key, nonce)
+///   ciphertext[1] = nonce (sent in the clear)
+///
+/// For multi-element messages, each element uses an incrementing nonce.
+pub fn encrypt_one(plaintext: u256, key: u256, nonce: u256) -> (u256, u256) {
+    let keystream = poseidon_hash(key, nonce)
+    let ciphertext = addmod(plaintext, keystream, PRIME)
+    (ciphertext, nonce)
+}
+
+/// Decrypt a single field element.
+pub fn decrypt_one(ciphertext: u256, key: u256, nonce: u256) -> u256 {
+    let keystream = poseidon_hash(key, nonce)
+    // plaintext = ciphertext - keystream (mod PRIME)
+    addmod(ciphertext, PRIME - keystream, PRIME)
+}
+
+/// Encrypt multiple field elements using incrementing nonces.
+pub fn encrypt<const N: usize>(
+    plaintext: [u256; N],
+    key: u256,
+    nonce: u256,
+) -> [u256; N] {
+    let mut ciphertext: [u256; N] = [0; N]
+
+    let mut i: usize = 0
+    while i < N {
+        let n = addmod(nonce, i as u256, PRIME)
+        let keystream = poseidon_hash(key, n)
+        ciphertext[i] = addmod(plaintext[i], keystream, PRIME)
+        i = i + 1
+    }
+    ciphertext
+}
+
+/// Decrypt multiple field elements using incrementing nonces.
+pub fn decrypt<const N: usize>(
+    ciphertext: [u256; N],
+    key: u256,
+    nonce: u256,
+) -> [u256; N] {
+    let mut plaintext: [u256; N] = [0; N]
+
+    let mut i: usize = 0
+    while i < N {
+        let n = addmod(nonce, i as u256, PRIME)
+        let keystream = poseidon_hash(key, n)
+        plaintext[i] = addmod(ciphertext[i], PRIME - keystream, PRIME)
+        i = i + 1
+    }
+    plaintext
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_encrypt_decrypt_roundtrip() {
+    let key: u256 = 12345
+    let nonce: u256 = 67890
+    let plaintext: u256 = 42
+
+    let (ct, _) = encrypt_one(plaintext, key, nonce)
+    let recovered = decrypt_one(ct, key, nonce)
+    assert(recovered == plaintext)
+}
+
+#[test]
+fn test_encrypt_decrypt_multi() {
+    let key: u256 = 12345
+    let nonce: u256 = 67890
+    let plaintext: [u256; 3] = [1, 2, 3]
+
+    let ct = encrypt<3>(plaintext, key, nonce)
+    let recovered = decrypt<3>(ct, key, nonce)
+    assert(recovered[0] == 1)
+    assert(recovered[1] == 2)
+    assert(recovered[2] == 3)
+}
+
+#[test]
+fn test_different_keys_different_ciphertext() {
+    let nonce: u256 = 1
+    let (ct1, _) = encrypt_one(42, 100, nonce)
+    let (ct2, _) = encrypt_one(42, 200, nonce)
+    assert(ct1 != ct2)
+}

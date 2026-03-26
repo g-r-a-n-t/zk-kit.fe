@@ -1,0 +1,6 @@
+[ingot]
+name = "poseidon_proof"
+version = "0.1.0"
+
+[dependencies]
+poseidon = { path = "../poseidon" }

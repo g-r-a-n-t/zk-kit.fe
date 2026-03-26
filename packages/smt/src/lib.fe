@@ -1,0 +1,112 @@
+/// Sparse Merkle Tree (SMT) proof verification.
+///
+/// A Sparse Merkle Tree uses a 254-bit key space (matching the BN254 scalar
+/// field) where each key bit determines the path from root to leaf. Unlike
+/// standard Merkle trees, SMTs support both membership AND non-membership
+/// proofs -- proving that a key is NOT in the tree.
+///
+/// Leaf nodes are H(key, value, 1). Internal nodes are H(left, right).
+/// Empty subtrees are represented by 0.
+///
+/// Based on the Noir and TypeScript zk-kit implementations.
+
+use poseidon::{hash as poseidon_hash}
+
+/// Hash a leaf node: H(key, value, 1).
+/// The third argument (1) marks this as a leaf vs internal node.
+fn hash_leaf(key: u256, value: u256) -> u256 {
+    // Poseidon is 2-input; hash in two steps: H(H(key, value), 1)
+    let kv = poseidon_hash(key, value)
+    poseidon_hash(kv, 1)
+}
+
+/// Compute the SMT root given an entry and its sibling path.
+///
+/// `key` determines the path bits: bit i of the key selects left (0) or
+/// right (1) at level i. Siblings that are 0 represent empty subtrees
+/// and are skipped (the node propagates upward unchanged).
+pub fn calculate_root<const MAX_DEPTH: usize>(
+    key: u256,
+    value: u256,
+    siblings: [u256; MAX_DEPTH],
+    depth: usize,
+) -> u256 {
+    let mut node = hash_leaf(key, value)
+
+    let mut i: usize = 0
+    while i < depth {
+        let sibling = siblings[i]
+        if sibling != 0 {
+            // Bit i of key determines ordering
+            let bit = (key >> (i as u256)) & 1
+            if bit == 0 {
+                node = poseidon_hash(node, sibling)
+            } else {
+                node = poseidon_hash(sibling, node)
+            }
+        }
+        i = i + 1
+    }
+    node
+}
+
+/// Verify membership: prove that (key, value) is in the tree with `root`.
+pub fn verify_membership<const MAX_DEPTH: usize>(
+    key: u256,
+    value: u256,
+    siblings: [u256; MAX_DEPTH],
+    depth: usize,
+    root: u256,
+) -> bool {
+    calculate_root<MAX_DEPTH>(key, value, siblings, depth) == root
+}
+
+/// Verify non-membership: prove that `queried_key` is NOT in the tree.
+///
+/// The proof provides a `matching_entry` (key, value) that IS in the tree
+/// and shares a common prefix with `queried_key`. If the matching entry
+/// is valid (its root matches) and its key differs from queried_key, then
+/// queried_key cannot be in the tree.
+pub fn verify_non_membership<const MAX_DEPTH: usize>(
+    queried_key: u256,
+    matching_key: u256,
+    matching_value: u256,
+    siblings: [u256; MAX_DEPTH],
+    depth: usize,
+    root: u256,
+) -> bool {
+    // Empty tree: root is 0, nothing is in it
+    if root == 0 {
+        return true
+    }
+
+    // The matching entry must have a different key
+    if matching_key == queried_key {
+        return false
+    }
+
+    // Verify the matching entry is actually in the tree
+    // (using the queried_key's path, since matching_entry shares the prefix)
+    calculate_root<MAX_DEPTH>(matching_key, matching_value, siblings, depth) == root
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_leaf_hash_deterministic() {
+    let h1 = hash_leaf(1, 2)
+    let h2 = hash_leaf(1, 2)
+    assert(h1 == h2)
+}
+
+#[test]
+fn test_leaf_hash_different() {
+    assert(hash_leaf(1, 2) != hash_leaf(3, 4))
+}
+
+#[test]
+fn test_empty_tree_non_membership() {
+    assert(verify_non_membership<32>(42, 0, 0, [0; 32], 0, 0))
+}

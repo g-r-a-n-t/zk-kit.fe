@@ -1,0 +1,87 @@
+/// Poseidon preimage proof verification.
+///
+/// Proves knowledge of Poseidon preimages without revealing them.
+/// Given a commitment (Poseidon hash), this allows verifying that
+/// the prover knows the inputs that produce that hash, combined
+/// with a scope value for domain separation.
+///
+/// Based on the TypeScript zk-kit implementation.
+
+use poseidon::{hash as poseidon_hash}
+
+/// Compute a Poseidon commitment from two preimage elements.
+/// commitment = Poseidon(a, b)
+pub fn commit(a: u256, b: u256) -> u256 {
+    poseidon_hash(a, b)
+}
+
+/// Compute a scoped commitment.
+/// Used for nullifier generation: nullifier = Poseidon(scope, secret)
+/// This prevents the same secret from being used across different scopes.
+pub fn scoped_commit(scope: u256, secret: u256) -> u256 {
+    poseidon_hash(scope, secret)
+}
+
+/// Compute a nullifier hash.
+/// nullifier = Poseidon(scope, Poseidon(secret_a, secret_b))
+/// This is the standard pattern: commit to secrets, then scope the commitment.
+pub fn compute_nullifier(scope: u256, secret_a: u256, secret_b: u256) -> u256 {
+    let inner = poseidon_hash(secret_a, secret_b)
+    poseidon_hash(scope, inner)
+}
+
+/// Verify a Poseidon preimage proof.
+///
+/// Given claimed preimages (a, b), verifies they produce the expected
+/// commitment. In a ZK context, the prover would generate a SNARK
+/// proof of this relation; this function is the verification equation.
+pub fn verify_preimage(a: u256, b: u256, expected_commitment: u256) -> bool {
+    poseidon_hash(a, b) == expected_commitment
+}
+
+/// Verify a scoped nullifier.
+///
+/// Checks that the nullifier was correctly derived from the given scope
+/// and secret commitment.
+pub fn verify_nullifier(
+    scope: u256,
+    secret_commitment: u256,
+    expected_nullifier: u256,
+) -> bool {
+    poseidon_hash(scope, secret_commitment) == expected_nullifier
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_commit_verify() {
+    let a: u256 = 42
+    let b: u256 = 17
+    let c = commit(a, b)
+    assert(verify_preimage(a, b, c))
+}
+
+#[test]
+fn test_wrong_preimage_fails() {
+    let c = commit(42, 17)
+    assert(verify_preimage(42, 18, c) == false)
+}
+
+#[test]
+fn test_scoped_commit_different_scopes() {
+    let s1 = scoped_commit(1, 42)
+    let s2 = scoped_commit(2, 42)
+    assert(s1 != s2)
+}
+
+#[test]
+fn test_nullifier_verify() {
+    let scope: u256 = 100
+    let secret_a: u256 = 42
+    let secret_b: u256 = 17
+    let nullifier = compute_nullifier(scope, secret_a, secret_b)
+    let inner = poseidon_hash(secret_a, secret_b)
+    assert(verify_nullifier(scope, inner, nullifier))
+}
