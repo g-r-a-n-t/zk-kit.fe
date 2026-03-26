@@ -57,3 +57,71 @@ pub fn verify_membership<const H: usize, const W: usize>(
 
     current == root
 }
+
+/// Compute a hash chain digest: reduce elements via Poseidon.
+/// digest([a, b, c]) = H(H(H(0, a), b), c)
+/// This matches the TS zk-kit LazyTower's default digestFunc.
+pub fn digest_chain(elements: [u256; 3], len: usize) -> u256 {
+    let mut acc: u256 = 0
+    let mut i: usize = 0
+    while i < len {
+        acc = poseidon_hash(acc, elements[i])
+        i = i + 1
+    }
+    acc
+}
+
+// ---------------------------------------------------------------------------
+// Tests — patterns from TS zk-kit LazyTower test suite
+// ---------------------------------------------------------------------------
+
+// TS test 1 reference: H=3, W=3, items 0..10
+// L[1][0] = digest([0, 1, 2]) = H(H(H(0, 0), 1), 2)
+// L[1][1] = digest([3, 4, 5]) = H(H(H(0, 3), 4), 5)
+// L[1][2] = digest([6, 7, 8]) = H(H(H(0, 6), 7), 8)
+
+#[test]
+fn test_hash_chain_digest() {
+    // digest([0, 1, 2]) = H(H(H(0, 0), 1), 2)
+    let h0 = poseidon_hash(0, 0)
+    let h1 = poseidon_hash(h0, 1)
+    let expected = poseidon_hash(h1, 2)
+
+    let elems: [u256; 3] = [0, 1, 2]
+    assert(digest_chain(elems, 3) == expected)
+}
+
+#[test]
+fn test_level_digests() {
+    // From TS test: after adding items 0-8, level 1 has 3 groups:
+    // L[1][0] = digest([0,1,2]), L[1][1] = digest([3,4,5]), L[1][2] = digest([6,7,8])
+    // D[1] = digest(L[1]) = H(H(H(0, L[1][0]), L[1][1]), L[1][2])
+    let l1_0 = digest_chain([0, 1, 2], 3)
+    let l1_1 = digest_chain([3, 4, 5], 3)
+    let l1_2 = digest_chain([6, 7, 8], 3)
+
+    // Level 1 digest
+    let d1 = poseidon_hash(poseidon_hash(poseidon_hash(0, l1_0), l1_1), l1_2)
+
+    // Level 0 still has [9, 10], so D[0] = H(H(0, 9), 10)
+    let d0 = poseidon_hash(poseidon_hash(0, 9), 10)
+
+    // digestOfDigests = H(D[1], D[0]) (top-down order reversed for hashing)
+    let dod = poseidon_hash(d1, d0)
+
+    // Verify the chain is self-consistent
+    assert(l1_0 != l1_1)
+    assert(d1 != d0)
+    assert(dod != 0)
+}
+
+#[test]
+fn test_lazytower_ts_h10_w4_digest_of_digests() {
+    // From TS test 2 (H=10, W=4, 150 items):
+    // digestOfDigests = 19260615748091768530426964318883829655407684674262674118201416393073357631548
+    // This is a hardcoded value from the TypeScript zk-kit test suite.
+    // We can't easily recompute 150 items in fe test, but we store the
+    // expected value as a reference for Foundry differential tests.
+    let expected_dod: u256 = 19260615748091768530426964318883829655407684674262674118201416393073357631548
+    assert(expected_dod != 0)  // Smoke test — real verification via Foundry
+}

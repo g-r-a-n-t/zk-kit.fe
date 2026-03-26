@@ -105,3 +105,55 @@ fn test_verify_invalid() {
     siblings[0] = b
     assert(verify<32>(a, 1, [0; 32], siblings, 999) == false)
 }
+
+// Cross-implementation parity tests.
+// These compute intermediate hashes and multi-level roots using the same
+// patterns as the TS/Noir/Circom zk-kit test suites.
+
+#[test]
+fn test_depth_two_tree() {
+    // 4-leaf tree: leaves = [1, 2, 3, 4]
+    // Level 0: H(1,2), H(3,4)
+    // Level 1: H(H(1,2), H(3,4))
+    let h01 = poseidon_hash(1, 2)
+    let h23 = poseidon_hash(3, 4)
+    let root = poseidon_hash(h01, h23)
+
+    // Prove leaf 1 (index 0, left at both levels)
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = 2   // sibling at level 0
+    siblings[1] = h23  // sibling at level 1
+    assert(binary_merkle_root<32>(1, 2, [0; 32], siblings) == root)
+
+    // Prove leaf 4 (index 3, right at both levels)
+    let mut siblings2: [u256; 32] = [0; 32]
+    siblings2[0] = 3
+    siblings2[1] = h01
+    let mut indices2: [u256; 32] = [0; 32]
+    indices2[0] = 1
+    indices2[1] = 1
+    assert(binary_merkle_root<32>(4, 2, indices2, siblings2) == root)
+}
+
+#[test]
+fn test_depth_three_tree() {
+    // 8-leaf tree: leaves = [10, 20, 30, 40, 50, 60, 70, 80]
+    let h01 = poseidon_hash(10, 20)
+    let h23 = poseidon_hash(30, 40)
+    let h45 = poseidon_hash(50, 60)
+    let h67 = poseidon_hash(70, 80)
+    let h0123 = poseidon_hash(h01, h23)
+    let h4567 = poseidon_hash(h45, h67)
+    let root = poseidon_hash(h0123, h4567)
+
+    // Prove leaf 50 (index 4 = binary 100, left-left-right path from root)
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = 60      // sibling at level 0
+    siblings[1] = h67     // sibling at level 1
+    siblings[2] = h0123   // sibling at level 2
+    let mut indices: [u256; 32] = [0; 32]
+    indices[0] = 0   // bit 0 of 4 = 0 (left)
+    indices[1] = 0   // bit 1 of 4 = 0 (left)
+    indices[2] = 1   // bit 2 of 4 = 1 (right)
+    assert(binary_merkle_root<32>(50, 3, indices, siblings) == root)
+}

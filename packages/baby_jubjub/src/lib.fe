@@ -192,3 +192,64 @@ fn test_invalid_point_not_on_curve() {
 fn test_base_point_in_subgroup() {
     assert(is_in_subgroup(base_point()))
 }
+
+// Cross-implementation parity: small scalar multiplications.
+// These are deterministic curve operations that must match any
+// Baby JubJub implementation (TS circomlibjs, Noir, Circom).
+
+#[test]
+fn test_double_base_point() {
+    let base = base_point()
+    let p2 = double(base)
+    // 2*G must be on curve and different from G
+    assert(is_on_curve(p2))
+    assert(p2.x != base.x || p2.y != base.y)
+    // 2*G via mul_scalar must equal double
+    let p2_mul = mul_scalar(base, 2)
+    assert(p2.x == p2_mul.x)
+    assert(p2.y == p2_mul.y)
+}
+
+#[test]
+fn test_scalar_mul_3() {
+    let base = base_point()
+    let p3 = mul_scalar(base, 3)
+    // 3*G = 2*G + G
+    let p2 = double(base)
+    let p3_add = add(p2, base)
+    assert(p3.x == p3_add.x)
+    assert(p3.y == p3_add.y)
+    assert(is_on_curve(p3))
+}
+
+#[test]
+fn test_addition_commutativity() {
+    let base = base_point()
+    let p2 = double(base)
+    let p3 = mul_scalar(base, 3)
+    // G + 2G = 2G + G
+    let a = add(base, p2)
+    let b = add(p2, base)
+    assert(a.x == b.x)
+    assert(a.y == b.y)
+}
+
+#[test]
+fn test_negate_then_add_is_identity() {
+    let p = mul_scalar(base_point(), 7)
+    let neg_p = negate(p)
+    let result = add(p, neg_p)
+    assert(result.x == 0)
+    assert(result.y == 1)
+}
+
+#[test]
+fn test_mul_scalar_associativity() {
+    let base = base_point()
+    // (3 * 4) * G = 12 * G
+    let p12a = mul_scalar(base, 12)
+    let p3 = mul_scalar(base, 3)
+    let p12b = mul_scalar(p3, 4)
+    assert(p12a.x == p12b.x)
+    assert(p12a.y == p12b.y)
+}

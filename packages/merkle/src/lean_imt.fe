@@ -95,3 +95,74 @@ fn test_two_leaves_right_proof() {
     let root = verify_proof(leaf_b, siblings, path_indices, 1)
     assert(root == expected_root)
 }
+
+// Cross-implementation parity: matches TS zk-kit LeanIMT test patterns.
+// These mirror the exact tree constructions from @zk-kit/lean-imt tests.
+
+#[test]
+fn test_five_leaf_tree_proof() {
+    // TS test: LeanIMT with leaves [0, 1, 2, 3, 4]
+    // Tree structure:
+    //       root
+    //      /    \
+    //    n2_0    4
+    //   /    \
+    //  n1_0  n1_1
+    //  / \   / \
+    // 0   1 2   3
+    let n1_0 = poseidon_hash(0, 1)
+    let n1_1 = poseidon_hash(2, 3)
+    let n2_0 = poseidon_hash(n1_0, n1_1)
+    let root = poseidon_hash(n2_0, 4)
+
+    // Prove leaf 0: path = left, left, left (indices [0, 0, 0])
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = 1       // sibling at depth 0
+    siblings[1] = n1_1    // sibling at depth 1
+    siblings[2] = 4       // sibling at depth 2
+    let path_indices: [u256; 32] = [0; 32]  // all left
+    assert(verify_proof(0, siblings, path_indices, 3) == root)
+
+    // Prove leaf 4: path = right at depth 0
+    let mut siblings4: [u256; 32] = [0; 32]
+    siblings4[0] = n2_0
+    let mut indices4: [u256; 32] = [0; 32]
+    indices4[0] = 1  // right
+    assert(verify_proof(4, siblings4, indices4, 1) == root)
+}
+
+#[test]
+fn test_update_equivalence() {
+    // TS test: LeanIMT([0, 1]), update index 0 to 2
+    // Before: root = H(0, 1)
+    // After:  root = H(2, 1)
+    let root_before = poseidon_hash(0, 1)
+    let root_after = poseidon_hash(2, 1)
+
+    // Verify old leaf 0 with sibling 1
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = 1
+    assert(verify(0, siblings, [0; 32], 1, root_before))
+
+    // Verify new leaf 2 with same sibling
+    assert(verify(2, siblings, [0; 32], 1, root_after))
+}
+
+#[test]
+fn test_all_zeros_root() {
+    // TS test: LeanIMT with all leaves updated to 0
+    // Tree [0, 0, 0, 0, 0]:
+    //   n1 = H(0, 0)
+    //   n2 = H(n1, n1)
+    //   root = H(n2, 0)
+    let n1 = poseidon_hash(0, 0)
+    let n2 = poseidon_hash(n1, n1)
+    let root = poseidon_hash(n2, 0)
+
+    // This root should be computable
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = n2
+    let mut indices: [u256; 32] = [0; 32]
+    indices[0] = 1
+    assert(verify_proof(0, siblings, indices, 1) == root)
+}
