@@ -110,6 +110,23 @@ pub fn negate(p: Point) -> Point {
     }
 }
 
+/// Check if a point is on the Baby JubJub curve.
+/// Verifies: a*x^2 + y^2 == 1 + d*x^2*y^2
+pub fn is_on_curve(p: Point) -> bool {
+    let x2 = mulmod(p.x, p.x, FIELD)
+    let y2 = mulmod(p.y, p.y, FIELD)
+    let lhs = addmod(mulmod(A, x2, FIELD), y2, FIELD)
+    let rhs = addmod(1, mulmod(D, mulmod(x2, y2, FIELD), FIELD), FIELD)
+    lhs == rhs
+}
+
+/// Check if a point is in the prime-order subgroup.
+/// Verifies: SUBORDER * P == identity (0, 1)
+pub fn is_in_subgroup(p: Point) -> bool {
+    let result = mul_scalar(p, SUBORDER)
+    result.x == 0 && result.y == 1
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -154,4 +171,24 @@ fn test_scalar_mul_order_is_identity() {
     let result = mul_scalar(base, SUBORDER)
     assert(result.x == 0)
     assert(result.y == 1)
+}
+
+#[test]
+fn test_base_point_on_curve() {
+    assert(is_on_curve(base_point()))
+}
+
+#[test]
+fn test_identity_on_curve() {
+    assert(is_on_curve(identity()))
+}
+
+#[test]
+fn test_invalid_point_not_on_curve() {
+    assert(is_on_curve(Point { x: 1, y: 1 }) == false)
+}
+
+#[test]
+fn test_base_point_in_subgroup() {
+    assert(is_in_subgroup(base_point()))
 }

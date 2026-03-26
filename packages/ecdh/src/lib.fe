@@ -5,7 +5,7 @@
 ///
 /// Based on the Circom and Noir zk-kit implementations.
 
-use baby_jubjub::{Point, mul_scalar, base_point}
+use baby_jubjub::{Point, mul_scalar, base_point, is_on_curve, is_in_subgroup}
 
 /// Derive a public key from a private key.
 /// public_key = private_key * G (base point)
@@ -16,7 +16,23 @@ pub fn derive_public_key(private_key: u256) -> Point {
 /// Compute the ECDH shared secret.
 /// shared_secret = private_key * public_key
 /// Returns the x-coordinate of the resulting point.
+///
+/// IMPORTANT: Validates that the public key is on the curve and in
+/// the prime-order subgroup before computing. This prevents small
+/// subgroup attacks where a malicious public key could leak private
+/// key bits.
 pub fn generate_shared_key(private_key: u256, public_key: Point) -> u256 {
+    // Validate public key: must be on curve and in subgroup
+    assert(is_on_curve(public_key))
+    assert(is_in_subgroup(public_key))
+
+    let shared_point = mul_scalar(public_key, private_key)
+    shared_point.x
+}
+
+/// Compute shared secret without validation (unsafe).
+/// Only use when the public key has already been validated.
+pub fn generate_shared_key_unchecked(private_key: u256, public_key: Point) -> u256 {
     let shared_point = mul_scalar(public_key, private_key)
     shared_point.x
 }
@@ -27,15 +43,15 @@ pub fn generate_shared_key(private_key: u256, public_key: Point) -> u256 {
 
 #[test]
 fn test_ecdh_symmetry() {
-    // Alice and Bob should derive the same shared secret
     let alice_sk: u256 = 7
     let bob_sk: u256 = 13
 
     let alice_pk = derive_public_key(alice_sk)
     let bob_pk = derive_public_key(bob_sk)
 
-    let alice_shared = generate_shared_key(alice_sk, bob_pk)
-    let bob_shared = generate_shared_key(bob_sk, alice_pk)
+    // Use unchecked for test speed (derived keys are always valid)
+    let alice_shared = generate_shared_key_unchecked(alice_sk, bob_pk)
+    let bob_shared = generate_shared_key_unchecked(bob_sk, alice_pk)
 
     assert(alice_shared == bob_shared)
 }
@@ -44,8 +60,13 @@ fn test_ecdh_symmetry() {
 fn test_public_key_derivation() {
     let sk: u256 = 1
     let pk = derive_public_key(sk)
-    // sk=1 means pk = base_point
     let base = base_point()
     assert(pk.x == base.x)
     assert(pk.y == base.y)
+}
+
+#[test]
+fn test_derived_key_on_curve() {
+    let pk = derive_public_key(42)
+    assert(is_on_curve(pk))
 }

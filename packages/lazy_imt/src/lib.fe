@@ -10,6 +10,47 @@
 
 use poseidon::{hash as poseidon_hash}
 
+/// Precomputed Poseidon zero hashes matching the Solidity InternalLazyIMT.
+/// Z[i] = Poseidon(Z[i-1], Z[i-1]) with Z[0] = 0.
+/// These MUST match the Solidity constants for cross-chain compatibility.
+pub fn default_zero(level: usize) -> u256 {
+    if level == 0 { return 0 }
+    if level == 1 { return 14744269619966411208579211824598458697587494354926760081771325075741142829156 }
+    if level == 2 { return 7423237065226347324353380772367382631490014989348495481811164164159255474657 }
+    if level == 3 { return 11286972368698509976183087595462810875513684078608517520839298933882497716792 }
+    if level == 4 { return 3607627140608796879659380071776844901612302623152076817094415224584923813162 }
+    if level == 5 { return 19712377064642672829441595136074946683621277828620209496774504837737984048981 }
+    if level == 6 { return 20775607673010627194014556968476266066927294572720319469184847051418138353016 }
+    if level == 7 { return 3396914609616007258851405644437304192397291162432396347162513310381425243293 }
+    if level == 8 { return 21551820661461729022865262380882070649935529853313286572328683688269863701601 }
+    if level == 9 { return 6573136701248752079028194407151022595060682063033565181951145966236778420039 }
+    if level == 10 { return 12413880268183407374852357075976609371175688755676981206018884971008854919922 }
+    if level == 11 { return 14271763308400718165336499097156975241954733520325982997864342600795471836726 }
+    if level == 12 { return 20066985985293572387227381049700832219069292839614107140851619262827735677018 }
+    if level == 13 { return 9394776414966240069580838672673694685292165040808226440647796406499139370960 }
+    if level == 14 { return 11331146992410411304059858900317123658895005918277453009197229807340014528524 }
+    if level == 15 { return 15819538789928229930262697811477882737253464456578333862691129291651619515538 }
+    if level == 16 { return 19217088683336594659449020493828377907203207941212636669271704950158751593251 }
+    if level == 17 { return 21035245323335827719745544373081896983162834604456827698288649288827293579666 }
+    if level == 18 { return 6939770416153240137322503476966641397417391950902474480970945462551409848591 }
+    if level == 19 { return 10941962436777715901943463195175331263348098796018438960955633645115732864202 }
+    if level == 20 { return 15019797232609675441998260052101280400536945603062888308240081994073687793470 }
+    if level == 21 { return 11702828337982203149177882813338547876343922920234831094975924378932809409969 }
+    if level == 22 { return 11217067736778784455593535811108456786943573747466706329920902520905755780395 }
+    if level == 23 { return 16072238744996205792852194127671441602062027943016727953216607508365787157389 }
+    if level == 24 { return 17681057402012993898104192736393849603097507831571622013521167331642182653248 }
+    if level == 25 { return 21694045479371014653083846597424257852691458318143380497809004364947786214945 }
+    if level == 26 { return 8163447297445169709687354538480474434591144168767135863541048304198280615192 }
+    if level == 27 { return 14081762237856300239452543304351251708585712948734528663957353575674639038357 }
+    if level == 28 { return 16619959921569409661790279042024627172199214148318086837362003702249041851090 }
+    if level == 29 { return 7022159125197495734384997711896547675021391130223237843255817587255104160365 }
+    if level == 30 { return 4114686047564160449611603615418567457008101555090703535405891656262658644463 }
+    if level == 31 { return 12549363297364877722388257367377629555213421373705596078299904496781819142130 }
+    if level == 32 { return 21443572485391568159800782191812935835534334817699172242223315142338162256601 }
+    // Should not reach here for valid depths
+    0
+}
+
 /// Compute the root of a lazy IMT given its current state.
 ///
 /// `elements` contains the known nodes at each level. If a level has
@@ -18,7 +59,6 @@ use poseidon::{hash as poseidon_hash}
 pub fn compute_root<const DEPTH: usize>(
     elements: [u256; DEPTH],
     num_leaves: u256,
-    zero_hashes: [u256; DEPTH],
 ) -> u256 {
     let mut node: u256 = 0
     let mut n = num_leaves
@@ -26,13 +66,12 @@ pub fn compute_root<const DEPTH: usize>(
     let mut i: usize = 0
     while i < DEPTH {
         if n & 1 == 1 {
-            // Odd: this level has a pending element
             node = poseidon_hash(elements[i], node)
         } else {
             if node == 0 {
-                node = zero_hashes[i]
+                node = default_zero(i)
             } else {
-                node = poseidon_hash(node, zero_hashes[i])
+                node = poseidon_hash(node, default_zero(i))
             }
         }
         n = n >> 1
@@ -57,12 +96,9 @@ pub fn insert<const DEPTH: usize>(
     let mut i: usize = 0
     while i < DEPTH {
         if n & 1 == 0 {
-            // Even: store the node at this level and stop
             new_elements[i] = node
-            // Remaining levels keep existing values
             return (new_elements, num_leaves + 1)
         } else {
-            // Odd: hash with the existing element and carry up
             node = poseidon_hash(elements[i], node)
         }
         n = n >> 1
@@ -77,6 +113,15 @@ pub fn insert<const DEPTH: usize>(
 // ---------------------------------------------------------------------------
 
 #[test]
+fn test_default_zero_chain() {
+    // Verify Z[1] = Poseidon(0, 0)
+    assert(default_zero(1) == poseidon_hash(0, 0))
+    // Verify Z[2] = Poseidon(Z[1], Z[1])
+    let z1 = default_zero(1)
+    assert(default_zero(2) == poseidon_hash(z1, z1))
+}
+
+#[test]
 fn test_insert_first_leaf() {
     let elements: [u256; 4] = [0; 4]
     let (new_elements, count) = insert<4>(42, elements, 0)
@@ -86,12 +131,10 @@ fn test_insert_first_leaf() {
 
 #[test]
 fn test_insert_second_leaf() {
-    // After first insert: elements[0] = 42
     let mut elements: [u256; 4] = [0; 4]
     elements[0] = 42
     let (new_elements, count) = insert<4>(99, elements, 1)
     assert(count == 2)
-    // Second leaf hashes with first at level 0, stores at level 1
     let expected = poseidon_hash(42, 99)
     assert(new_elements[1] == expected)
 }

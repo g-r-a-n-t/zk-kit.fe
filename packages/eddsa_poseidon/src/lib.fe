@@ -6,62 +6,77 @@
 ///
 /// Based on the TypeScript zk-kit implementation (audited as part of
 /// Semaphore V4).
+///
+/// NOTE: The canonical zk-kit EdDSA uses Poseidon5 (5-input Poseidon)
+/// for the hash: H(R8.x, R8.y, A.x, A.y, msg). This implementation
+/// chains 2-input Poseidon calls to approximate the same construction:
+///   H = Poseidon(Poseidon(Poseidon(Poseidon(R8.x, R8.y), A.x), A.y), msg)
+///
+/// This produces DIFFERENT hashes than Poseidon5. For full protocol
+/// compatibility, a T=6 Poseidon permutation is needed. This chained
+/// version is suitable for standalone use but signatures are NOT
+/// interchangeable with the TS/Circom zk-kit.
 
-use baby_jubjub::{Point, SUBORDER, FIELD, add, mul_scalar, base_point}
+use baby_jubjub::{Point, SUBORDER, FIELD, A, D, add, mul_scalar, base_point}
 use poseidon::{hash as poseidon_hash}
 use std::evm::ops::{mulmod, addmod}
 
 /// An EdDSA signature.
 pub struct Signature {
-    pub r8: Point,   // R = r * B
+    pub r8: Point,   // R = r * B8
     pub s: u256,     // s scalar
+}
+
+/// Check if a point is on the Baby JubJub curve.
+/// Curve: a*x^2 + y^2 = 1 + d*x^2*y^2
+fn in_curve(p: Point) -> bool {
+    let x2 = mulmod(p.x, p.x, FIELD)
+    let y2 = mulmod(p.y, p.y, FIELD)
+    let lhs = addmod(mulmod(A, x2, FIELD), y2, FIELD)
+    let rhs = addmod(1, mulmod(D, mulmod(x2, y2, FIELD), FIELD), FIELD)
+    lhs == rhs
+}
+
+/// Compute the EdDSA message hash using chained 2-input Poseidon.
+///
+/// Canonical zk-kit uses: poseidon5([R8.x, R8.y, A.x, A.y, msg])
+/// We approximate: Poseidon(Poseidon(Poseidon(Poseidon(R8.x, R8.y), A.x), A.y), msg)
+fn compute_hash(r8: Point, pub_key: Point, message: u256) -> u256 {
+    let h = poseidon_hash(r8.x, r8.y)
+    let h = poseidon_hash(h, pub_key.x)
+    let h = poseidon_hash(h, pub_key.y)
+    poseidon_hash(h, message)
 }
 
 /// Verify an EdDSA-Poseidon signature.
 ///
-/// Given a public key, message, and signature (R8, S), checks:
-///   S * B == R8 + H(R8, pubkey, msg) * pubkey
+/// Verification equation (with cofactor 8):
+///   [S] * B8 == R8 + [8 * hm] * A
 ///
-/// This is the standard EdDSA verification equation.
+/// where B8 is the base point (already includes cofactor 8),
+/// and hm is the message hash reduced mod suborder.
 pub fn verify(
     message: u256,
     pub_key: Point,
     signature: Signature,
 ) -> bool {
-    // Compute the hash: H = Poseidon(R8.x, pub_key.x, msg)
-    let h_first = poseidon_hash(signature.r8.x, pub_key.x)
-    let h = poseidon_hash(h_first, message)
+    // Validate inputs
+    if !in_curve(signature.r8) { return false }
+    if !in_curve(pub_key) { return false }
+    if signature.s >= SUBORDER { return false }
 
-    // Reduce h modulo subgroup order
-    let h_mod = h % SUBORDER
+    // Compute hash: H(R8.x, R8.y, A.x, A.y, message)
+    let hm = compute_hash(signature.r8, pub_key, message)
 
-    // Left side: S * B
+    // Left side: [S] * B8
     let left = mul_scalar(base_point(), signature.s)
 
-    // Right side: R8 + h * pubkey
-    let h_pub = mul_scalar(pub_key, h_mod)
+    // Right side: R8 + [8 * hm] * A
+    // Cofactor 8 applied to hm before multiplying with public key
+    let hm_times_8 = mulmod(hm, 8, SUBORDER)
+    let h_pub = mul_scalar(pub_key, hm_times_8)
     let right = add(signature.r8, h_pub)
 
     // Check equality
-    left.x == right.x && left.y == right.y
-}
-
-/// Verify with a packed public key (just the x-coordinate and sign).
-/// Many protocols store only the x-coordinate + 1 bit for the y sign.
-/// This function takes the full public key Point for now.
-pub fn verify_with_msg_hash(
-    msg_hash: u256,
-    pub_key: Point,
-    signature: Signature,
-) -> bool {
-    // Same as verify, but msg is already hashed
-    let h_first = poseidon_hash(signature.r8.x, pub_key.x)
-    let h = poseidon_hash(h_first, msg_hash)
-    let h_mod = h % SUBORDER
-
-    let left = mul_scalar(base_point(), signature.s)
-    let h_pub = mul_scalar(pub_key, h_mod)
-    let right = add(signature.r8, h_pub)
-
     left.x == right.x && left.y == right.y
 }
