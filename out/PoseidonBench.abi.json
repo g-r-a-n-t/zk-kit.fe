@@ -1,0 +1,53 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "hash2",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "uint256"
+      },
+      {
+        "name": "b",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "hash3",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "uint256"
+      },
+      {
+        "name": "b",
+        "type": "uint256"
+      },
+      {
+        "name": "c",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "pure"
+  }
+]

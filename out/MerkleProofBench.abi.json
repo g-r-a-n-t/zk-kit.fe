@@ -1,0 +1,61 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "computeRoot",
+    "inputs": [
+      {
+        "name": "proof",
+        "type": "uint256[32]"
+      },
+      {
+        "name": "proof_len",
+        "type": "uint256"
+      },
+      {
+        "name": "leaf",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "verify",
+    "inputs": [
+      {
+        "name": "proof",
+        "type": "uint256[32]"
+      },
+      {
+        "name": "proof_len",
+        "type": "uint256"
+      },
+      {
+        "name": "root",
+        "type": "uint256"
+      },
+      {
+        "name": "leaf",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "pure"
+  }
+]

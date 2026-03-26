@@ -1,0 +1,21 @@
+use std::abi::sol
+
+msg MerkleMsg {
+    #[selector = sol("computeRoot(uint256[32],uint256,uint256)")]
+    ComputeRoot { proof: [u256; 32], proof_len: u256, leaf: u256 } -> u256,
+
+    #[selector = sol("verify(uint256[32],uint256,uint256,uint256)")]
+    Verify { proof: [u256; 32], proof_len: u256, root: u256, leaf: u256 } -> bool,
+}
+
+pub contract MerkleProofBench {
+    init() {}
+    recv MerkleMsg {
+        ComputeRoot { proof, proof_len, leaf } -> u256 {
+            super::merkle_proof::compute_root(proof, proof_len, leaf)
+        }
+        Verify { proof, proof_len, root, leaf } -> bool {
+            super::merkle_proof::verify(proof, proof_len, root, leaf)
+        }
+    }
+}
