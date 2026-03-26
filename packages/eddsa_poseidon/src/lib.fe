@@ -7,18 +7,12 @@
 /// Based on the TypeScript zk-kit implementation (audited as part of
 /// Semaphore V4).
 ///
-/// NOTE: The canonical zk-kit EdDSA uses Poseidon5 (5-input Poseidon)
-/// for the hash: H(R8.x, R8.y, A.x, A.y, msg). This implementation
-/// chains 2-input Poseidon calls to approximate the same construction:
-///   H = Poseidon(Poseidon(Poseidon(Poseidon(R8.x, R8.y), A.x), A.y), msg)
-///
-/// This produces DIFFERENT hashes than Poseidon5. For full protocol
-/// compatibility, a T=6 Poseidon permutation is needed. This chained
-/// version is suitable for standalone use but signatures are NOT
-/// interchangeable with the TS/Circom zk-kit.
+/// Uses Poseidon5 (5-input, T=6) for the message hash, matching the
+/// canonical zk-kit EdDSA: H(R8.x, R8.y, A.x, A.y, msg).
+/// Signatures are interoperable with TS/Circom zk-kit implementations.
 
 use baby_jubjub::{Point, SUBORDER, FIELD, A, D, add, mul_scalar, base_point}
-use poseidon::{hash as poseidon_hash}
+use poseidon::{hash5 as poseidon5}
 use std::evm::ops::{mulmod, addmod}
 
 /// An EdDSA signature.
@@ -37,24 +31,14 @@ fn in_curve(p: Point) -> bool {
     lhs == rhs
 }
 
-/// Compute the EdDSA message hash using chained 2-input Poseidon.
-///
-/// Canonical zk-kit uses: poseidon5([R8.x, R8.y, A.x, A.y, msg])
-/// We approximate: Poseidon(Poseidon(Poseidon(Poseidon(R8.x, R8.y), A.x), A.y), msg)
-fn compute_hash(r8: Point, pub_key: Point, message: u256) -> u256 {
-    let h = poseidon_hash(r8.x, r8.y)
-    let h = poseidon_hash(h, pub_key.x)
-    let h = poseidon_hash(h, pub_key.y)
-    poseidon_hash(h, message)
-}
-
 /// Verify an EdDSA-Poseidon signature.
 ///
 /// Verification equation (with cofactor 8):
 ///   [S] * B8 == R8 + [8 * hm] * A
 ///
 /// where B8 is the base point (already includes cofactor 8),
-/// and hm is the message hash reduced mod suborder.
+/// hm = Poseidon5(R8.x, R8.y, A.x, A.y, message),
+/// and the cofactor 8 is applied to hm before multiplying with A.
 pub fn verify(
     message: u256,
     pub_key: Point,
@@ -65,14 +49,13 @@ pub fn verify(
     if !in_curve(pub_key) { return false }
     if signature.s >= SUBORDER { return false }
 
-    // Compute hash: H(R8.x, R8.y, A.x, A.y, message)
-    let hm = compute_hash(signature.r8, pub_key, message)
+    // Compute hash using Poseidon5: H(R8.x, R8.y, A.x, A.y, message)
+    let hm = poseidon5(signature.r8.x, signature.r8.y, pub_key.x, pub_key.y, message)
 
     // Left side: [S] * B8
     let left = mul_scalar(base_point(), signature.s)
 
     // Right side: R8 + [8 * hm] * A
-    // Cofactor 8 applied to hm before multiplying with public key
     let hm_times_8 = mulmod(hm, 8, SUBORDER)
     let h_pub = mul_scalar(pub_key, hm_times_8)
     let right = add(signature.r8, h_pub)

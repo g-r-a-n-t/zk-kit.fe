@@ -1,69 +1,135 @@
 /// Poseidon-based encryption and decryption.
 ///
-/// Uses Poseidon permutation in a sponge-like construction for symmetric
-/// encryption. The shared key (from ECDH) and a nonce are used to
-/// initialize the state, then plaintext elements are absorbed and
-/// ciphertext is squeezed.
+/// Uses the Poseidon permutation (T=4, state width 4) in a sponge
+/// construction matching the iden3 poseidon-cipher specification.
+///
+/// The sponge absorbs 3 plaintext elements per permutation call
+/// (rate = 3, capacity = 1). The state is initialized with:
+///   state[0] = 0 (capacity)
+///   state[1] = key[0]
+///   state[2] = key[1]
+///   state[3] = nonce + (message_length * 2^128)
 ///
 /// Based on the TypeScript and Circom zk-kit implementations.
+/// Reference: https://drive.google.com/file/d/1EVrP3DzoGbmzkRmYnyEDcIQcXVU7GlOd/view
 
-use poseidon::{hash as poseidon_hash, PRIME}
-use std::evm::ops::{addmod}
+use poseidon::constants_t4::{PRIME, C, M, N_ROUNDS_F, N_ROUNDS_P}
+use std::evm::ops::{addmod, mulmod}
 
-/// Encrypt a single field element.
-///
-/// Uses Poseidon as a keyed permutation:
-///   ciphertext[0] = plaintext + Poseidon(key, nonce)
-///   ciphertext[1] = nonce (sent in the clear)
-///
-/// For multi-element messages, each element uses an incrementing nonce.
-pub fn encrypt_one(plaintext: u256, key: u256, nonce: u256) -> (u256, u256) {
-    let keystream = poseidon_hash(key, nonce)
-    let ciphertext = addmod(plaintext, keystream, PRIME)
-    (ciphertext, nonce)
+/// S-box: x^5 mod PRIME
+fn sbox(x: u256) -> u256 {
+    let x2: u256 = mulmod(x, x, PRIME)
+    let x4: u256 = mulmod(x2, x2, PRIME)
+    mulmod(x4, x, PRIME)
 }
 
-/// Decrypt a single field element.
-pub fn decrypt_one(ciphertext: u256, key: u256, nonce: u256) -> u256 {
-    let keystream = poseidon_hash(key, nonce)
-    // plaintext = ciphertext - keystream (mod PRIME)
-    addmod(ciphertext, PRIME - keystream, PRIME)
-}
+/// Poseidon permutation for T=4 state (in-place, unoptimized dense matrix).
+/// This is the same algorithm as poseidon::hash3 but operates on a mutable
+/// 4-element state array for the sponge construction.
+fn permute(
+    in_s0: u256, in_s1: u256, in_s2: u256, in_s3: u256
+) -> (u256, u256, u256, u256) {
+    let p = PRIME
+    let total: usize = N_ROUNDS_F + N_ROUNDS_P
+    let mut s0 = in_s0
+    let mut s1 = in_s1
+    let mut s2 = in_s2
+    let mut s3 = in_s3
 
-/// Encrypt multiple field elements using incrementing nonces.
-pub fn encrypt<const N: usize>(
-    plaintext: [u256; N],
-    key: u256,
-    nonce: u256,
-) -> [u256; N] {
-    let mut ciphertext: [u256; N] = [0; N]
+    let mut round: usize = 0
+    while round < total {
+        let rc: usize = round * 4
+        s0 = addmod(s0, C[rc], p)
+        s1 = addmod(s1, C[rc + 1], p)
+        s2 = addmod(s2, C[rc + 2], p)
+        s3 = addmod(s3, C[rc + 3], p)
 
-    let mut i: usize = 0
-    while i < N {
-        let n = addmod(nonce, i as u256, PRIME)
-        let keystream = poseidon_hash(key, n)
-        ciphertext[i] = addmod(plaintext[i], keystream, PRIME)
-        i = i + 1
+        if round < N_ROUNDS_F / 2 || round >= N_ROUNDS_F / 2 + N_ROUNDS_P {
+            s0 = sbox(s0)
+            s1 = sbox(s1)
+            s2 = sbox(s2)
+            s3 = sbox(s3)
+        } else {
+            s0 = sbox(s0)
+        }
+
+        let t0 = addmod(addmod(addmod(mulmod(M[0][0], s0, p), mulmod(M[0][1], s1, p), p), mulmod(M[0][2], s2, p), p), mulmod(M[0][3], s3, p), p)
+        let t1 = addmod(addmod(addmod(mulmod(M[1][0], s0, p), mulmod(M[1][1], s1, p), p), mulmod(M[1][2], s2, p), p), mulmod(M[1][3], s3, p), p)
+        let t2 = addmod(addmod(addmod(mulmod(M[2][0], s0, p), mulmod(M[2][1], s1, p), p), mulmod(M[2][2], s2, p), p), mulmod(M[2][3], s3, p), p)
+        let t3 = addmod(addmod(addmod(mulmod(M[3][0], s0, p), mulmod(M[3][1], s1, p), p), mulmod(M[3][2], s2, p), p), mulmod(M[3][3], s3, p), p)
+        s0 = t0
+        s1 = t1
+        s2 = t2
+        s3 = t3
+
+        round = round + 1
     }
-    ciphertext
+    (s0, s1, s2, s3)
 }
 
-/// Decrypt multiple field elements using incrementing nonces.
-pub fn decrypt<const N: usize>(
-    ciphertext: [u256; N],
-    key: u256,
+/// Encrypt a single block of 3 field elements.
+///
+/// State initialization:
+///   state = [0, key_x, key_y, nonce + msg_len * 2^128]
+///
+/// For each block of 3 plaintext elements:
+///   state = permute(state)
+///   state[1..4] += plaintext[0..3]
+///   ciphertext[0..3] = state[1..4]
+///
+/// Final: state = permute(state); ciphertext.push(state[1]) (auth tag)
+pub fn encrypt_block(
+    plaintext: [u256; 3],
+    key_x: u256,
+    key_y: u256,
     nonce: u256,
-) -> [u256; N] {
-    let mut plaintext: [u256; N] = [0; N]
+) -> [u256; 4] {
+    let p = PRIME
+    // msg_len = 3 (single block), encoded in upper 128 bits of state[3]
+    let len_encoded: u256 = 3 * 340282366920938463463374607431768211456  // 3 * 2^128
+    let state3_init = addmod(nonce, len_encoded, p)
 
-    let mut i: usize = 0
-    while i < N {
-        let n = addmod(nonce, i as u256, PRIME)
-        let keystream = poseidon_hash(key, n)
-        plaintext[i] = addmod(ciphertext[i], PRIME - keystream, PRIME)
-        i = i + 1
-    }
-    plaintext
+    // Permute initial state
+    let (s0, s1, s2, s3) = permute(0, key_x, key_y, state3_init)
+
+    // Absorb plaintext
+    let c0 = addmod(s1, plaintext[0], p)
+    let c1 = addmod(s2, plaintext[1], p)
+    let c2 = addmod(s3, plaintext[2], p)
+
+    // Final permutation for auth tag
+    let (_, tag, _, _) = permute(s0, c0, c1, c2)
+
+    [c0, c1, c2, tag]
+}
+
+/// Decrypt a single block of 3 field elements.
+///
+/// Reverses the sponge: plaintext = ciphertext - permuted_state.
+/// Validates the authentication tag.
+pub fn decrypt_block(
+    ciphertext: [u256; 4],
+    key_x: u256,
+    key_y: u256,
+    nonce: u256,
+) -> [u256; 3] {
+    let p = PRIME
+    let len_encoded: u256 = 3 * 340282366920938463463374607431768211456
+    let state3_init = addmod(nonce, len_encoded, p)
+
+    // Permute initial state
+    let (s0, s1, s2, s3) = permute(0, key_x, key_y, state3_init)
+
+    // Recover plaintext
+    let m0 = addmod(ciphertext[0], p - s1, p)
+    let m1 = addmod(ciphertext[1], p - s2, p)
+    let m2 = addmod(ciphertext[2], p - s3, p)
+
+    // Verify auth tag
+    let (_, tag, _, _) = permute(s0, ciphertext[0], ciphertext[1], ciphertext[2])
+    assert(ciphertext[3] == tag)
+
+    [m0, m1, m2]
 }
 
 // ---------------------------------------------------------------------------
@@ -72,23 +138,13 @@ pub fn decrypt<const N: usize>(
 
 #[test]
 fn test_encrypt_decrypt_roundtrip() {
-    let key: u256 = 12345
-    let nonce: u256 = 67890
-    let plaintext: u256 = 42
-
-    let (ct, _) = encrypt_one(plaintext, key, nonce)
-    let recovered = decrypt_one(ct, key, nonce)
-    assert(recovered == plaintext)
-}
-
-#[test]
-fn test_encrypt_decrypt_multi() {
-    let key: u256 = 12345
-    let nonce: u256 = 67890
+    let key_x: u256 = 12345
+    let key_y: u256 = 67890
+    let nonce: u256 = 42
     let plaintext: [u256; 3] = [1, 2, 3]
 
-    let ct = encrypt<3>(plaintext, key, nonce)
-    let recovered = decrypt<3>(ct, key, nonce)
+    let ct = encrypt_block(plaintext, key_x, key_y, nonce)
+    let recovered = decrypt_block(ct, key_x, key_y, nonce)
     assert(recovered[0] == 1)
     assert(recovered[1] == 2)
     assert(recovered[2] == 3)
@@ -97,7 +153,16 @@ fn test_encrypt_decrypt_multi() {
 #[test]
 fn test_different_keys_different_ciphertext() {
     let nonce: u256 = 1
-    let (ct1, _) = encrypt_one(42, 100, nonce)
-    let (ct2, _) = encrypt_one(42, 200, nonce)
-    assert(ct1 != ct2)
+    let pt: [u256; 3] = [42, 0, 0]
+    let ct1 = encrypt_block(pt, 100, 200, nonce)
+    let ct2 = encrypt_block(pt, 300, 400, nonce)
+    assert(ct1[0] != ct2[0])
+}
+
+#[test]
+fn test_different_nonces_different_ciphertext() {
+    let pt: [u256; 3] = [42, 0, 0]
+    let ct1 = encrypt_block(pt, 100, 200, 1)
+    let ct2 = encrypt_block(pt, 100, 200, 2)
+    assert(ct1[0] != ct2[0])
 }

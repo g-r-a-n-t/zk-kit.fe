@@ -10,14 +10,13 @@
 ///
 /// Based on the Noir and TypeScript zk-kit implementations.
 
-use poseidon::{hash as poseidon_hash}
+use poseidon::{hash as poseidon_hash, hash3 as poseidon_hash3}
 
 /// Hash a leaf node: H(key, value, 1).
+/// Uses 3-input Poseidon (T=4) matching the Noir/TS zk-kit spec.
 /// The third argument (1) marks this as a leaf vs internal node.
 fn hash_leaf(key: u256, value: u256) -> u256 {
-    // Poseidon is 2-input; hash in two steps: H(H(key, value), 1)
-    let kv = poseidon_hash(key, value)
-    poseidon_hash(kv, 1)
+    poseidon_hash3(key, value, 1)
 }
 
 /// Compute the SMT root given an entry and its sibling path.
