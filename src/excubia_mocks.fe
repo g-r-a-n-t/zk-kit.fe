@@ -1,0 +1,195 @@
+use std::evm::{Address, StorageMap}
+
+pub msg MockERC721Msg {
+    #[selector = 0x52000001]
+    Mint { token_id: u256, owner: Address },
+    #[selector = 0x52000002]
+    OwnerOf { token_id: u256 } -> u256,
+}
+
+struct MockERC721Store { owners: StorageMap<u256, u256> }
+
+pub contract MockERC721 {
+    mut store: MockERC721Store,
+
+    recv MockERC721Msg {
+        Mint { token_id, owner } uses (mut store) {
+            store.owners.set(key: token_id, value: owner.inner)
+        }
+
+        OwnerOf { token_id } -> u256 uses (store) {
+            store.owners.get(key: token_id)
+        }
+    }
+}
+
+pub msg MockGitcoinPassportDecoderMsg {
+    #[selector = 0x54000001]
+    SetScore { user: Address, score: u256 },
+    #[selector = 0x54000002]
+    GetScore { user: Address } -> u256,
+}
+
+struct MockGitcoinPassportDecoderStore { scores: StorageMap<Address, u256> }
+
+pub contract MockGitcoinPassportDecoder {
+    mut store: MockGitcoinPassportDecoderStore,
+
+    recv MockGitcoinPassportDecoderMsg {
+        SetScore { user, score } uses (mut store) {
+            store.scores.set(key: user, value: score)
+        }
+
+        GetScore { user } -> u256 uses (store) {
+            store.scores.get(key: user)
+        }
+    }
+}
+
+pub msg MockHatsMsg {
+    #[selector = 0x56000001]
+    SetWearer { user: Address, hat: u256, is_wearer: bool },
+    #[selector = 0x56000002]
+    IsWearerOfHat { user: Address, hat: u256 } -> bool,
+}
+
+struct MockHatsStore { wearers: StorageMap<(Address, u256), bool> }
+
+pub contract MockHats {
+    mut store: MockHatsStore,
+
+    recv MockHatsMsg {
+        SetWearer { user, hat, is_wearer } uses (mut store) {
+            store.wearers.set(key: (user, hat), value: is_wearer)
+        }
+
+        IsWearerOfHat { user, hat } -> bool uses (store) {
+            store.wearers.get(key: (user, hat))
+        }
+    }
+}
+
+pub msg MockEASMsg {
+    #[selector = 0x59000001]
+    GetSchema { uid: u256 } -> u256,
+    #[selector = 0x59000002]
+    GetRecipient { uid: u256 } -> u256,
+    #[selector = 0x59000003]
+    GetAttester { uid: u256 } -> u256,
+    #[selector = 0x59000004]
+    GetRevocationTime { uid: u256 } -> u256,
+}
+
+struct MockEASStore {
+    schemas: StorageMap<u256, u256>,
+    recipients: StorageMap<u256, u256>,
+    attesters: StorageMap<u256, u256>,
+    revocation_times: StorageMap<u256, u256>,
+}
+
+pub contract MockEAS {
+    mut store: MockEASStore,
+
+    init(recipient: Address, attester: Address, schema: u256)
+    uses (mut store)
+    {
+        store.schemas.set(key: 1, value: schema)
+        store.recipients.set(key: 1, value: recipient.inner)
+        store.attesters.set(key: 1, value: attester.inner)
+        store.revocation_times.set(key: 1, value: 0)
+
+        store.schemas.set(key: 2, value: schema)
+        store.recipients.set(key: 2, value: recipient.inner)
+        store.attesters.set(key: 2, value: attester.inner)
+        store.revocation_times.set(key: 2, value: 1)
+
+        store.schemas.set(key: 3, value: 1)
+        store.recipients.set(key: 3, value: recipient.inner)
+        store.attesters.set(key: 3, value: attester.inner)
+        store.revocation_times.set(key: 3, value: 0)
+
+        store.schemas.set(key: 4, value: schema)
+        store.recipients.set(key: 4, value: 1)
+        store.attesters.set(key: 4, value: attester.inner)
+        store.revocation_times.set(key: 4, value: 0)
+
+        store.schemas.set(key: 5, value: schema)
+        store.recipients.set(key: 5, value: recipient.inner)
+        store.attesters.set(key: 5, value: 1)
+        store.revocation_times.set(key: 5, value: 0)
+    }
+
+    recv MockEASMsg {
+        GetSchema { uid } -> u256 uses (store) {
+            store.schemas.get(key: uid)
+        }
+
+        GetRecipient { uid } -> u256 uses (store) {
+            store.recipients.get(key: uid)
+        }
+
+        GetAttester { uid } -> u256 uses (store) {
+            store.attesters.get(key: uid)
+        }
+
+        GetRevocationTime { uid } -> u256 uses (store) {
+            store.revocation_times.get(key: uid)
+        }
+    }
+}
+
+pub msg MockSemaphoreMsg {
+    #[selector = 0x5b000001]
+    GroupCounter -> u256,
+    #[selector = 0x5b000002]
+    VerifyProof { group_id: u256, nullifier: u256 } -> bool,
+}
+
+struct MockSemaphoreStore {
+    group_counter: u256,
+    groups: StorageMap<u256, bool>,
+    proofs: StorageMap<u256, bool>,
+}
+
+pub contract MockSemaphore {
+    mut store: MockSemaphoreStore,
+
+    init()
+    uses (mut store)
+    {
+        store.group_counter = 1
+        store.groups.set(key: 0, value: true)
+        store.proofs.set(key: 0, value: true)
+        store.proofs.set(key: 1, value: false)
+    }
+
+    recv MockSemaphoreMsg {
+        GroupCounter -> u256 uses (store) {
+            store.group_counter
+        }
+
+        VerifyProof { group_id, nullifier } -> bool
+        uses (store)
+        {
+            store.groups.get(key: group_id) && store.proofs.get(key: nullifier)
+        }
+    }
+}
+
+// TODO: Re-enable the Semaphore Excubia wrapper after Fe supports the fixed-size-array
+// message ABI used by the Solidity-parity contract surface. The proof and replay logic
+// stays in the helper functions above; only the wrapper layer is disabled.
+
+// TODO: Re-enable the ZKEdDSA verifier wrapper after Fe supports the fixed-size-array and
+// nested-array message ABI used by the Solidity-parity contract surface. The verifier logic
+// stays in the helper functions above; only the wrapper layer is disabled.
+
+// TODO: Re-enable the ZKEdDSA Excubia wrapper after Fe supports the fixed-size-array and
+// nested-array message ABI used by the Solidity-parity contract surface. The proof and
+// replay logic stays in the helper functions above; only the wrapper layer is disabled.
+
+// TODO: Re-enable the Excubia caller harness when the disabled wrapper contracts return.
+
+// TODO: Re-enable the Excubia parity tests together with the wrapper contracts.
+// The tree and hash library tests remain active; the contract-level parity suite is
+// intentionally disabled while zk-kit-fe stays library-first.
