@@ -175,21 +175,3 @@ pub contract MockSemaphore {
         }
     }
 }
-
-// TODO: Re-enable the Semaphore Excubia wrapper after Fe supports the fixed-size-array
-// message ABI used by the Solidity-parity contract surface. The proof and replay logic
-// stays in the helper functions above; only the wrapper layer is disabled.
-
-// TODO: Re-enable the ZKEdDSA verifier wrapper after Fe supports the fixed-size-array and
-// nested-array message ABI used by the Solidity-parity contract surface. The verifier logic
-// stays in the helper functions above; only the wrapper layer is disabled.
-
-// TODO: Re-enable the ZKEdDSA Excubia wrapper after Fe supports the fixed-size-array and
-// nested-array message ABI used by the Solidity-parity contract surface. The proof and
-// replay logic stays in the helper functions above; only the wrapper layer is disabled.
-
-// TODO: Re-enable the Excubia caller harness when the disabled wrapper contracts return.
-
-// TODO: Re-enable the Excubia parity tests together with the wrapper contracts.
-// The tree and hash library tests remain active; the contract-level parity suite is
-// intentionally disabled while zk-kit-fe stays library-first.

@@ -1,6 +1,6 @@
 # zk-kit-fe
 
-Fe implementations of the main `zk-kit` tree primitives, Excubia helper logic, and hash helpers, with tests that mirror the Solidity behavior where practical.
+Fe implementations of the main `zk-kit` tree primitives, Excubia contracts, and hash helpers, with tests that mirror the Solidity behavior where practical.
 
 ## Implemented
 
@@ -10,9 +10,9 @@ Fe implementations of the main `zk-kit` tree primitives, Excubia helper logic, a
 - Lean incremental Merkle tree
 - LazyTower hash chain
 - Poseidon `t=3` and `t=6` helpers used by the tree code
-- Excubia validation helpers and mock dependency contracts
+- Excubia contracts with mock dependency contracts
 
-The current active test suite includes direct behavior checks, Solidity-vector checks, and parity-oriented stateful tests for insert, update, remove, proof, and error handling paths. The full Excubia wrapper and contract-level parity surface is intentionally disabled while the Fe implementation stays library-first.
+The current active test suite includes direct behavior checks, Solidity-vector checks, and parity-oriented stateful tests for insert, update, remove, proof, contract wrapper, and error handling paths.
 
 ## Run Tests
 

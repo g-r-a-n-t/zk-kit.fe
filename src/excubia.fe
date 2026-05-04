@@ -1,7 +1,5 @@
-use core::abi::Encode
-use std::abi::{Sol, encoded_size}
-use std::evm::{Address, Call, Ctx, Evm, Log, StorageMap}
-use std::evm::crypto::{ec_add, ec_mul, ec_pairing, mulmod}
+use std::evm::{Address, Call, Ctx, Evm, Log, RawMem, StorageMap, last_returndata}
+use std::evm::crypto::{ec_add, ec_mul, mulmod}
 use std::evm::mem
 
 use super::excubia_mocks::{
@@ -13,6 +11,7 @@ use super::excubia_mocks::{
     MockGitcoinPassportDecoderMsg,
     MockHats,
     MockHatsMsg,
+    MockSemaphore,
     MockSemaphoreMsg,
 }
 
@@ -628,10 +627,6 @@ fn semaphore_proof_validity_err(group_id: u256, scope: u256, is_valid: bool) -> 
     ExcubiaError::None
 }
 
-fn encode_sol_to_ptr<T>(_ value: own T, _ ptr: u256) where T: Encode<Sol> {
-    value.encode_to_ptr(ptr)
-}
-
 fn zkeddsa_ecmul(x: u256, y: u256, scalar: u256) -> (bool, u256, u256) {
     let (out_x, out_y) = ec_mul(px: x, py: y, s: scalar)
     (true, out_x, out_y)
@@ -665,7 +660,9 @@ fn zkeddsa_verify_pairing(
     p_b: [[u256; 2]; 2],
     p_c: [u256; 2],
     vk_x: [u256; 2],
-) -> bool {
+) -> bool
+uses (mem: mut RawMem, call: mut Call)
+{
     let pairing_input: [u256; 24] = [
         p_a[0],
         mulmod(a: p_a[1], b: ZKEDDSA_Q - 1, m: ZKEDDSA_Q),
@@ -692,10 +689,31 @@ fn zkeddsa_verify_pairing(
         ZKEDDSA_DELTAY1,
         ZKEDDSA_DELTAY2,
     ]
-    let pairing_len = encoded_size<[u256; 24]>()
+    let pairing_len = 24 * 32
     let pairing_ptr = mem::alloc(pairing_len)
-    encode_sol_to_ptr(pairing_input, pairing_ptr)
-    ec_pairing(offset: pairing_ptr, len: pairing_len)
+    let mut i: usize = 0
+    let mut offset: u256 = 0
+    while i < 24 {
+        mem.mstore(addr: pairing_ptr + offset, value: pairing_input[i])
+        i += 1
+        offset += 32
+    }
+
+    // The pairing precompile can fail for invalid proof input. Generated
+    // Solidity verifiers treat that as `false`, not as a bubbled revert, so
+    // this verifier must preserve that behavior for invalid-proof checks.
+    let ok = call
+        .raw_call(
+            addr: Address { inner: 8 },
+            gas: 1000000,
+            value: 0,
+            args_offset: pairing_ptr,
+            args_len: pairing_len,
+        )
+    if !ok { return false }
+
+    let output = last_returndata()
+    output.len >= 32 && mem.mload(output.base) != 0
 }
 
 fn zkeddsa_verify_proof(
@@ -703,7 +721,9 @@ fn zkeddsa_verify_proof(
     p_b: [[u256; 2]; 2],
     p_c: [u256; 2],
     pub_signals: [u256; 38],
-) -> bool {
+) -> bool
+uses (mem: mut RawMem, call: mut Call)
+{
     let mut i: usize = 0
     while i < 38 {
         if pub_signals[i] >= ZKEDDSA_R {
@@ -729,50 +749,6 @@ fn zkeddsa_verify_proof(
     }
 
     zkeddsa_verify_pairing(p_a: p_a, p_b: p_b, p_c: p_c, vk_x: [vk_x0, vk_x1])
-}
-
-fn zkeddsa_proof_err(
-    valid_event_id: u256,
-    valid_signer_0: u256,
-    valid_signer_1: u256,
-    passerby: Address,
-    p_a: [u256; 2],
-    p_b: [[u256; 2]; 2],
-    p_c: [u256; 2],
-    pub_signals: [u256; 38],
-) -> ExcubiaError {
-    let is_valid = zkeddsa_verify_proof(p_a: p_a, p_b: p_b, p_c: p_c, pub_signals: pub_signals)
-    zkeddsa_proof_validity_err(
-        valid_event_id: valid_event_id,
-        valid_signer_0: valid_signer_0,
-        valid_signer_1: valid_signer_1,
-        passerby: passerby,
-        is_valid: is_valid,
-        pub_signals: pub_signals,
-    )
-}
-
-fn zkeddsa_proof_validity_err(
-    valid_event_id: u256,
-    valid_signer_0: u256,
-    valid_signer_1: u256,
-    passerby: Address,
-    is_valid: bool,
-    pub_signals: [u256; 38],
-) -> ExcubiaError {
-    if pub_signals[13] != valid_signer_0 || pub_signals[14] != valid_signer_1 {
-        return ExcubiaError::InvalidSigners
-    }
-    if pub_signals[15] != valid_event_id {
-        return ExcubiaError::InvalidEventId
-    }
-    if pub_signals[37] != passerby.inner {
-        return ExcubiaError::InvalidWatermark
-    }
-    if !is_valid {
-        return ExcubiaError::InvalidProof
-    }
-    ExcubiaError::None
 }
 
 pub msg FreeForAllExcubiaMsg {
@@ -1298,6 +1274,354 @@ pub contract EASExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
     }
 }
 
+pub msg SemaphoreExcubiaMsg {
+    #[selector = 0x5c000001]
+    SetGate { gate: Address } -> u256,
+    #[selector = 0x5c000002]
+    Check {
+        passerby: Address,
+        merkle_tree_depth: u256,
+        merkle_tree_root: u256,
+        nullifier: u256,
+        message_value: u256,
+        scope: u256,
+        points: [u256; 8],
+    } -> u256,
+    #[selector = 0x5c000003]
+    Pass {
+        passerby: Address,
+        merkle_tree_depth: u256,
+        merkle_tree_root: u256,
+        nullifier: u256,
+        message_value: u256,
+        scope: u256,
+        points: [u256; 8],
+    } -> u256,
+    #[selector = 0x5c000004]
+    Gate -> u256,
+    #[selector = 0x5c000005]
+    Trait -> u256,
+    #[selector = 0x5c000006]
+    HasPassedNullifier { nullifier: u256 } -> bool,
+}
+
+struct SemaphoreExcubiaStore {
+    owner: Address,
+    gate: Address,
+    semaphore: Address,
+    group_id: u256,
+    passed_nullifiers: StorageMap<u256, bool>,
+}
+
+pub contract SemaphoreExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut store: SemaphoreExcubiaStore,
+
+    init(semaphore: Address, group_id: u256)
+    uses (mut store, ctx, mut call)
+    {
+        assert(semaphore != Address::zero())
+        let group_counter: u256 = call
+            .call(
+                addr: semaphore,
+                gas: 100000,
+                value: 0,
+                message: MockSemaphoreMsg::GroupCounter {},
+            )
+        assert(group_counter > group_id)
+
+        store.owner = ctx.caller()
+        store.gate = Address::zero()
+        store.semaphore = semaphore
+        store.group_id = group_id
+    }
+
+    recv SemaphoreExcubiaMsg {
+        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
+            let err = excubia_set_gate_err(
+                owner: store.owner,
+                gate: store.gate,
+                caller: ctx.caller(),
+                new_gate: gate,
+            )
+            if err.is_none() {
+                store.gate = gate
+                emit_gate_set(gate: gate)
+            }
+            err.code()
+        }
+
+        Check {
+            passerby,
+            merkle_tree_depth,
+            merkle_tree_root,
+            nullifier,
+            message_value,
+            scope,
+            points,
+        } -> u256
+        uses (store, mut call)
+        {
+            let _ = passerby
+            let _ = merkle_tree_depth
+            let _ = merkle_tree_root
+            let _ = message_value
+            let _ = points
+            semaphore_proof_err(
+                semaphore: store.semaphore,
+                group_id: store.group_id,
+                scope: scope,
+                nullifier: nullifier,
+            )
+                .code()
+        }
+
+        Pass {
+            passerby,
+            merkle_tree_depth,
+            merkle_tree_root,
+            nullifier,
+            message_value,
+            scope,
+            points,
+        } -> u256
+        uses (mut store, ctx, mut call, mut log)
+        {
+            let err = excubia_pass_common_err(
+                gate: store.gate,
+                caller: ctx.caller(),
+                already_passed: store.passed_nullifiers.get(key: nullifier),
+            )
+            if !err.is_none() {
+                return err.code()
+            }
+
+            let _ = merkle_tree_depth
+            let _ = merkle_tree_root
+            let _ = message_value
+            let _ = points
+            let err = semaphore_proof_err(
+                semaphore: store.semaphore,
+                group_id: store.group_id,
+                scope: scope,
+                nullifier: nullifier,
+            )
+            if !err.is_none() {
+                return err.code()
+            }
+
+            store.passed_nullifiers.set(key: nullifier, value: true)
+            emit_gate_passed(passerby: passerby, gate: store.gate)
+            ExcubiaError::None.code()
+        }
+
+        Gate -> u256 uses (store) {
+            store.gate.inner
+        }
+
+        Trait -> u256 {
+            EXCUBIA_TRAIT_SEMAPHORE
+        }
+
+        HasPassedNullifier { nullifier } -> bool uses (store) {
+            store.passed_nullifiers.get(key: nullifier)
+        }
+    }
+}
+
+pub msg ZKEdDSAEventTicketPCDVerifierMsg {
+    #[selector = 0x5d000001]
+    VerifyProof {
+        p_a: [u256; 2],
+        p_b: [[u256; 2]; 2],
+        p_c: [u256; 2],
+        pub_signals: [u256; 38],
+    } -> bool,
+}
+
+pub contract ZKEdDSAEventTicketPCDVerifier uses (mem: mut RawMem, call: mut Call) {
+    recv ZKEdDSAEventTicketPCDVerifierMsg {
+        VerifyProof { p_a, p_b, p_c, pub_signals } -> bool
+        uses (mut mem, mut call)
+        {
+            zkeddsa_verify_proof(p_a: p_a, p_b: p_b, p_c: p_c, pub_signals: pub_signals)
+        }
+    }
+}
+
+fn zkeddsa_external_proof_err(
+    verifier: Address,
+    valid_event_id: u256,
+    valid_signer_0: u256,
+    valid_signer_1: u256,
+    passerby: Address,
+    p_a: [u256; 2],
+    p_b: [[u256; 2]; 2],
+    p_c: [u256; 2],
+    pub_signals: [u256; 38],
+) -> ExcubiaError
+uses (call: mut Call)
+{
+    if pub_signals[13] != valid_signer_0 || pub_signals[14] != valid_signer_1 {
+        return ExcubiaError::InvalidSigners
+    }
+    if pub_signals[15] != valid_event_id {
+        return ExcubiaError::InvalidEventId
+    }
+    if pub_signals[37] != passerby.inner {
+        return ExcubiaError::InvalidWatermark
+    }
+
+    let is_valid: bool = call
+        .static(
+            addr: verifier,
+            gas: 2000000,
+            message: ZKEdDSAEventTicketPCDVerifierMsg::VerifyProof {
+                p_a: p_a,
+                p_b: p_b,
+                p_c: p_c,
+                pub_signals: pub_signals,
+            },
+        )
+    if !is_valid {
+        return ExcubiaError::InvalidProof
+    }
+
+    ExcubiaError::None
+}
+
+pub msg ZKEdDSAEventTicketPCDExcubiaMsg {
+    #[selector = 0x5e000001]
+    SetGate { gate: Address } -> u256,
+    #[selector = 0x5e000002]
+    Check {
+        passerby: Address,
+        p_a: [u256; 2],
+        p_b: [[u256; 2]; 2],
+        p_c: [u256; 2],
+        pub_signals: [u256; 38],
+    } -> u256,
+    #[selector = 0x5e000003]
+    Pass {
+        passerby: Address,
+        p_a: [u256; 2],
+        p_b: [[u256; 2]; 2],
+        p_c: [u256; 2],
+        pub_signals: [u256; 38],
+    } -> u256,
+    #[selector = 0x5e000004]
+    Gate -> u256,
+    #[selector = 0x5e000005]
+    Trait -> u256,
+    #[selector = 0x5e000006]
+    HasPassedZKEdDSAEventTicketPCD { ticket_id: u256 } -> bool,
+}
+
+struct ZKEdDSAEventTicketPCDExcubiaStore {
+    owner: Address,
+    gate: Address,
+    verifier: Address,
+    valid_event_id: u256,
+    valid_signer_0: u256,
+    valid_signer_1: u256,
+    passed_ticket_ids: StorageMap<u256, bool>,
+}
+
+pub contract ZKEdDSAEventTicketPCDExcubia uses (ctx: Ctx, call: mut Call, log: mut Log) {
+    mut store: ZKEdDSAEventTicketPCDExcubiaStore,
+
+    init(verifier: Address, valid_event_id: u256, valid_signer_0: u256, valid_signer_1: u256)
+    uses (mut store, ctx)
+    {
+        assert(verifier != Address::zero())
+        store.owner = ctx.caller()
+        store.gate = Address::zero()
+        store.verifier = verifier
+        store.valid_event_id = valid_event_id
+        store.valid_signer_0 = valid_signer_0
+        store.valid_signer_1 = valid_signer_1
+    }
+
+    recv ZKEdDSAEventTicketPCDExcubiaMsg {
+        SetGate { gate } -> u256 uses (mut store, ctx, mut log) {
+            let err = excubia_set_gate_err(
+                owner: store.owner,
+                gate: store.gate,
+                caller: ctx.caller(),
+                new_gate: gate,
+            )
+            if err.is_none() {
+                store.gate = gate
+                emit_gate_set(gate: gate)
+            }
+            err.code()
+        }
+
+        Check { passerby, p_a, p_b, p_c, pub_signals } -> u256
+        uses (store, mut call)
+        {
+            zkeddsa_external_proof_err(
+                verifier: store.verifier,
+                valid_event_id: store.valid_event_id,
+                valid_signer_0: store.valid_signer_0,
+                valid_signer_1: store.valid_signer_1,
+                passerby: passerby,
+                p_a: p_a,
+                p_b: p_b,
+                p_c: p_c,
+                pub_signals: pub_signals,
+            )
+                .code()
+        }
+
+        Pass { passerby, p_a, p_b, p_c, pub_signals } -> u256
+        uses (mut store, ctx, mut call, mut log)
+        {
+            let ticket_id = pub_signals[0]
+            let err = excubia_pass_common_err(
+                gate: store.gate,
+                caller: ctx.caller(),
+                already_passed: store.passed_ticket_ids.get(key: ticket_id),
+            )
+            if !err.is_none() {
+                return err.code()
+            }
+
+            let err = zkeddsa_external_proof_err(
+                verifier: store.verifier,
+                valid_event_id: store.valid_event_id,
+                valid_signer_0: store.valid_signer_0,
+                valid_signer_1: store.valid_signer_1,
+                passerby: passerby,
+                p_a: p_a,
+                p_b: p_b,
+                p_c: p_c,
+                pub_signals: pub_signals,
+            )
+            if !err.is_none() {
+                return err.code()
+            }
+
+            store.passed_ticket_ids.set(key: ticket_id, value: true)
+            emit_gate_passed(passerby: passerby, gate: store.gate)
+            ExcubiaError::None.code()
+        }
+
+        Gate -> u256 uses (store) {
+            store.gate.inner
+        }
+
+        Trait -> u256 {
+            EXCUBIA_TRAIT_ZKEDDSA_EVENT_TICKET_PCD
+        }
+
+        HasPassedZKEdDSAEventTicketPCD { ticket_id } -> bool
+        uses (store)
+        {
+            store.passed_ticket_ids.get(key: ticket_id)
+        }
+    }
+}
+
 pub msg ExcubiaCallerMsg {
     #[selector = 0x58000001]
     FreeForAllSetGate { target: Address, gate: Address } -> u256,
@@ -1319,6 +1643,30 @@ pub msg ExcubiaCallerMsg {
     EASSetGate { target: Address, gate: Address } -> u256,
     #[selector = 0x5800000a]
     EASPass { target: Address, passerby: Address, attestation_id: u256 } -> u256,
+    #[selector = 0x5800000b]
+    SemaphoreSetGate { target: Address, gate: Address } -> u256,
+    #[selector = 0x5800000c]
+    SemaphorePass {
+        target: Address,
+        passerby: Address,
+        merkle_tree_depth: u256,
+        merkle_tree_root: u256,
+        nullifier: u256,
+        message_value: u256,
+        scope: u256,
+        points: [u256; 8],
+    } -> u256,
+    #[selector = 0x5800000d]
+    ZKEdDSASetGate { target: Address, gate: Address } -> u256,
+    #[selector = 0x5800000e]
+    ZKEdDSAPass {
+        target: Address,
+        passerby: Address,
+        p_a: [u256; 2],
+        p_b: [[u256; 2]; 2],
+        p_c: [u256; 2],
+        pub_signals: [u256; 38],
+    } -> u256,
 }
 
 pub contract ExcubiaCaller uses (call: mut Call) {
@@ -1420,6 +1768,71 @@ pub contract ExcubiaCaller uses (call: mut Call) {
                 gas: 200000,
                 value: 0,
                 message: EASExcubiaMsg::Pass { passerby: passerby, attestation_id: attestation_id },
+            )
+        }
+
+        SemaphoreSetGate { target, gate } -> u256
+        uses (mut call)
+        {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: SemaphoreExcubiaMsg::SetGate { gate: gate },
+            )
+        }
+
+        SemaphorePass {
+            target,
+            passerby,
+            merkle_tree_depth,
+            merkle_tree_root,
+            nullifier,
+            message_value,
+            scope,
+            points,
+        } -> u256
+        uses (mut call)
+        {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: SemaphoreExcubiaMsg::Pass {
+                    passerby: passerby,
+                    merkle_tree_depth: merkle_tree_depth,
+                    merkle_tree_root: merkle_tree_root,
+                    nullifier: nullifier,
+                    message_value: message_value,
+                    scope: scope,
+                    points: points,
+                },
+            )
+        }
+
+        ZKEdDSASetGate { target, gate } -> u256 uses (mut call) {
+            call.call(
+                addr: target,
+                gas: 200000,
+                value: 0,
+                message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: gate },
+            )
+        }
+
+        ZKEdDSAPass { target, passerby, p_a, p_b, p_c, pub_signals } -> u256
+        uses (mut call)
+        {
+            call.call(
+                addr: target,
+                gas: 5000000,
+                value: 0,
+                message: ZKEdDSAEventTicketPCDExcubiaMsg::Pass {
+                    passerby: passerby,
+                    p_a: p_a,
+                    p_b: p_b,
+                    p_c: p_c,
+                    pub_signals: pub_signals,
+                },
             )
         }
     }
@@ -2163,4 +2576,606 @@ fn test_eas_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
             },
         )
     assert(err == ExcubiaError::AlreadyPassed.code())
+}
+
+#[test]
+fn test_semaphore_excubia_matches_solidity_behavior() uses (evm: mut Evm) {
+    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2060)
+    let semaphore = evm.create2<MockSemaphore>(value: 0, args: (), salt: 2061)
+    let excubia = evm.create2<SemaphoreExcubia>(value: 0, args: (semaphore, 0), salt: 2062)
+    let passerby = Address { inner: 0x6001 }
+
+    let trait_value: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: SemaphoreExcubiaMsg::Trait {},
+        )
+    assert(trait_value == EXCUBIA_TRAIT_SEMAPHORE)
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 200000,
+            value: 0,
+            message: ExcubiaCallerMsg::SemaphoreSetGate { target: excubia, gate: caller },
+        )
+    assert(err == ExcubiaError::OwnerOnly.code())
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: SemaphoreExcubiaMsg::SetGate { gate: Address::zero() },
+        )
+    assert(err == ExcubiaError::ZeroAddress.code())
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: SemaphoreExcubiaMsg::SetGate { gate: caller },
+        )
+    assert(err == ExcubiaError::None.code())
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: SemaphoreExcubiaMsg::Check {
+                passerby: passerby,
+                merkle_tree_depth: 1,
+                merkle_tree_root: 0,
+                nullifier: 0,
+                message_value: 0,
+                scope: 1,
+                points: [0, 0, 0, 0, 0, 0, 0, 0],
+            },
+        )
+    assert(err == ExcubiaError::UnexpectedScope.code())
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: SemaphoreExcubiaMsg::Check {
+                passerby: passerby,
+                merkle_tree_depth: 1,
+                merkle_tree_root: 0,
+                nullifier: 1,
+                message_value: 0,
+                scope: 0,
+                points: [1, 0, 0, 0, 0, 0, 0, 0],
+            },
+        )
+    assert(err == ExcubiaError::InvalidProof.code())
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: SemaphoreExcubiaMsg::Check {
+                passerby: passerby,
+                merkle_tree_depth: 1,
+                merkle_tree_root: 0,
+                nullifier: 0,
+                message_value: 0,
+                scope: 0,
+                points: [0, 0, 0, 0, 0, 0, 0, 0],
+            },
+        )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: SemaphoreExcubiaMsg::HasPassedNullifier { nullifier: 0 },
+        )
+    assert(!has_passed)
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: SemaphoreExcubiaMsg::Pass {
+                passerby: passerby,
+                merkle_tree_depth: 1,
+                merkle_tree_root: 0,
+                nullifier: 0,
+                message_value: 0,
+                scope: 0,
+                points: [0, 0, 0, 0, 0, 0, 0, 0],
+            },
+        )
+    assert(err == ExcubiaError::GateOnly.code())
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 200000,
+            value: 0,
+            message: ExcubiaCallerMsg::SemaphorePass {
+                target: excubia,
+                passerby: passerby,
+                merkle_tree_depth: 1,
+                merkle_tree_root: 0,
+                nullifier: 0,
+                message_value: 0,
+                scope: 1,
+                points: [0, 0, 0, 0, 0, 0, 0, 0],
+            },
+        )
+    assert(err == ExcubiaError::UnexpectedScope.code())
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 200000,
+            value: 0,
+            message: ExcubiaCallerMsg::SemaphorePass {
+                target: excubia,
+                passerby: passerby,
+                merkle_tree_depth: 1,
+                merkle_tree_root: 0,
+                nullifier: 1,
+                message_value: 0,
+                scope: 0,
+                points: [1, 0, 0, 0, 0, 0, 0, 0],
+            },
+        )
+    assert(err == ExcubiaError::InvalidProof.code())
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 200000,
+            value: 0,
+            message: ExcubiaCallerMsg::SemaphorePass {
+                target: excubia,
+                passerby: passerby,
+                merkle_tree_depth: 1,
+                merkle_tree_root: 0,
+                nullifier: 0,
+                message_value: 0,
+                scope: 0,
+                points: [0, 0, 0, 0, 0, 0, 0, 0],
+            },
+        )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: SemaphoreExcubiaMsg::HasPassedNullifier { nullifier: 0 },
+        )
+    assert(has_passed)
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 200000,
+            value: 0,
+            message: ExcubiaCallerMsg::SemaphorePass {
+                target: excubia,
+                passerby: passerby,
+                merkle_tree_depth: 1,
+                merkle_tree_root: 0,
+                nullifier: 0,
+                message_value: 0,
+                scope: 0,
+                points: [0, 0, 0, 0, 0, 0, 0, 0],
+            },
+        )
+    assert(err == ExcubiaError::AlreadyPassed.code())
+}
+
+#[test]
+fn test_zkeddsa_event_ticket_pcd_excubia_matches_solidity_behavior()
+uses (evm: mut Evm)
+{
+    let caller = evm.create2<ExcubiaCaller>(value: 0, args: (), salt: 2070)
+    let verifier = evm.create2<ZKEdDSAEventTicketPCDVerifier>(value: 0, args: (), salt: 2071)
+    let excubia = evm
+        .create2<ZKEdDSAEventTicketPCDExcubia>(
+            value: 0,
+            args: (
+                verifier,
+                ZKEDDSA_VALID_EVENT_ID,
+                ZKEDDSA_VALID_SIGNER_0,
+                ZKEDDSA_VALID_SIGNER_1,
+            ),
+            salt: 2072,
+        )
+    let invalid_signer_0_excubia = evm
+        .create2<ZKEdDSAEventTicketPCDExcubia>(
+            value: 0,
+            args: (
+                verifier,
+                ZKEDDSA_VALID_EVENT_ID,
+                ZKEDDSA_INVALID_SIGNER_0,
+                ZKEDDSA_VALID_SIGNER_1,
+            ),
+            salt: 2073,
+        )
+    let invalid_signer_1_excubia = evm
+        .create2<ZKEdDSAEventTicketPCDExcubia>(
+            value: 0,
+            args: (
+                verifier,
+                ZKEDDSA_VALID_EVENT_ID,
+                ZKEDDSA_VALID_SIGNER_0,
+                ZKEDDSA_INVALID_SIGNER_1,
+            ),
+            salt: 2074,
+        )
+    let invalid_event_id_excubia = evm
+        .create2<ZKEdDSAEventTicketPCDExcubia>(
+            value: 0,
+            args: (
+                verifier,
+                ZKEDDSA_INVALID_EVENT_ID,
+                ZKEDDSA_VALID_SIGNER_0,
+                ZKEDDSA_VALID_SIGNER_1,
+            ),
+            salt: 2075,
+        )
+    let passerby = Address { inner: 0x627306090abab3a6e1400e9345bc60c78a8bef57 }
+
+    let trait_value: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::Trait {},
+        )
+    assert(trait_value == EXCUBIA_TRAIT_ZKEDDSA_EVENT_TICKET_PCD)
+
+    let verifier_ok: bool = evm
+        .call(
+            addr: verifier,
+            gas: 5000000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDVerifierMsg::VerifyProof {
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(verifier_ok)
+
+    let verifier_ok: bool = evm
+        .call(
+            addr: verifier,
+            gas: 5000000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDVerifierMsg::VerifyProof {
+                p_a: ZKEDDSA_INVALID_PROOF_A,
+                p_b: ZKEDDSA_INVALID_PROOF_B,
+                p_c: ZKEDDSA_INVALID_PROOF_C,
+                pub_signals: ZKEDDSA_INVALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(!verifier_ok)
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 200000,
+            value: 0,
+            message: ExcubiaCallerMsg::ZKEdDSASetGate { target: excubia, gate: caller },
+        )
+    assert(err == ExcubiaError::OwnerOnly.code())
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: Address::zero() },
+        )
+    assert(err == ExcubiaError::ZeroAddress.code())
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: caller },
+        )
+    assert(err == ExcubiaError::None.code())
+
+    let err: u256 = evm
+        .call(
+            addr: invalid_signer_0_excubia,
+            gas: 100000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: caller },
+        )
+    assert(err == ExcubiaError::None.code())
+
+    let err: u256 = evm
+        .call(
+            addr: invalid_signer_1_excubia,
+            gas: 100000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: caller },
+        )
+    assert(err == ExcubiaError::None.code())
+
+    let err: u256 = evm
+        .call(
+            addr: invalid_event_id_excubia,
+            gas: 100000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::SetGate { gate: caller },
+        )
+    assert(err == ExcubiaError::None.code())
+
+    let err: u256 = evm
+        .call(
+            addr: invalid_signer_0_excubia,
+            gas: 5000000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
+                passerby: passerby,
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::InvalidSigners.code())
+
+    let err: u256 = evm
+        .call(
+            addr: invalid_signer_1_excubia,
+            gas: 5000000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
+                passerby: passerby,
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::InvalidSigners.code())
+
+    let err: u256 = evm
+        .call(
+            addr: invalid_event_id_excubia,
+            gas: 5000000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
+                passerby: passerby,
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::InvalidEventId.code())
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 5000000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
+                passerby: passerby,
+                p_a: ZKEDDSA_INVALIDWATERMARK_PROOF_A,
+                p_b: ZKEDDSA_INVALIDWATERMARK_PROOF_B,
+                p_c: ZKEDDSA_INVALIDWATERMARK_PROOF_C,
+                pub_signals: ZKEDDSA_INVALIDWATERMARK_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::InvalidWatermark.code())
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 5000000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
+                passerby: passerby,
+                p_a: ZKEDDSA_INVALID_PROOF_A,
+                p_b: ZKEDDSA_INVALID_PROOF_B,
+                p_c: ZKEDDSA_INVALID_PROOF_C,
+                pub_signals: ZKEDDSA_INVALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::InvalidProof.code())
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 5000000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::Check {
+                passerby: passerby,
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::HasPassedZKEdDSAEventTicketPCD {
+                ticket_id: ZKEDDSA_VALID_TICKET_ID,
+            },
+        )
+    assert(!has_passed)
+
+    let err: u256 = evm
+        .call(
+            addr: excubia,
+            gas: 5000000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::Pass {
+                passerby: passerby,
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::GateOnly.code())
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 5000000,
+            value: 0,
+            message: ExcubiaCallerMsg::ZKEdDSAPass {
+                target: invalid_signer_0_excubia,
+                passerby: passerby,
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::InvalidSigners.code())
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 5000000,
+            value: 0,
+            message: ExcubiaCallerMsg::ZKEdDSAPass {
+                target: invalid_signer_1_excubia,
+                passerby: passerby,
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::InvalidSigners.code())
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 5000000,
+            value: 0,
+            message: ExcubiaCallerMsg::ZKEdDSAPass {
+                target: invalid_event_id_excubia,
+                passerby: passerby,
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::InvalidEventId.code())
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 5000000,
+            value: 0,
+            message: ExcubiaCallerMsg::ZKEdDSAPass {
+                target: excubia,
+                passerby: passerby,
+                p_a: ZKEDDSA_INVALIDWATERMARK_PROOF_A,
+                p_b: ZKEDDSA_INVALIDWATERMARK_PROOF_B,
+                p_c: ZKEDDSA_INVALIDWATERMARK_PROOF_C,
+                pub_signals: ZKEDDSA_INVALIDWATERMARK_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::InvalidWatermark.code())
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 5000000,
+            value: 0,
+            message: ExcubiaCallerMsg::ZKEdDSAPass {
+                target: excubia,
+                passerby: passerby,
+                p_a: ZKEDDSA_INVALID_PROOF_A,
+                p_b: ZKEDDSA_INVALID_PROOF_B,
+                p_c: ZKEDDSA_INVALID_PROOF_C,
+                pub_signals: ZKEDDSA_INVALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::InvalidProof.code())
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 5000000,
+            value: 0,
+            message: ExcubiaCallerMsg::ZKEdDSAPass {
+                target: excubia,
+                passerby: passerby,
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::None.code())
+
+    let has_passed: bool = evm
+        .call(
+            addr: excubia,
+            gas: 100000,
+            value: 0,
+            message: ZKEdDSAEventTicketPCDExcubiaMsg::HasPassedZKEdDSAEventTicketPCD {
+                ticket_id: ZKEDDSA_VALID_TICKET_ID,
+            },
+        )
+    assert(has_passed)
+
+    let err: u256 = evm
+        .call(
+            addr: caller,
+            gas: 5000000,
+            value: 0,
+            message: ExcubiaCallerMsg::ZKEdDSAPass {
+                target: excubia,
+                passerby: passerby,
+                p_a: ZKEDDSA_VALID_PROOF_A,
+                p_b: ZKEDDSA_VALID_PROOF_B,
+                p_c: ZKEDDSA_VALID_PROOF_C,
+                pub_signals: ZKEDDSA_VALID_PROOF_PUB_SIGNALS,
+            },
+        )
+    assert(err == ExcubiaError::AlreadyPassed.code())
+}
+
+#[test(should_revert)]
+fn test_zkeddsa_event_ticket_pcd_excubia_rejects_zero_verifier()
+uses (evm: mut Evm)
+{
+    let _ = evm
+        .create2<ZKEdDSAEventTicketPCDExcubia>(
+            value: 0,
+            args: (
+                Address::zero(),
+                ZKEDDSA_VALID_EVENT_ID,
+                ZKEDDSA_VALID_SIGNER_0,
+                ZKEDDSA_VALID_SIGNER_1,
+            ),
+            salt: 2076,
+        )
 }
