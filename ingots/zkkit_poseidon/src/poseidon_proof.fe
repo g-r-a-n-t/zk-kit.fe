@@ -1,0 +1,44 @@
+/// Poseidon "proof" helpers.
+///
+/// This module contains the on-chain hash wiring used by circuits like
+/// `poseidon-proof`: commitments and nullifiers built from Poseidon hash calls.
+use super::poseidon::hash2
+
+pub fn commit(_ a: u256, _ b: u256) -> u256 {
+    hash2(a, b)
+}
+
+pub fn scoped_commit(_ scope: u256, _ secret: u256) -> u256 {
+    hash2(scope, secret)
+}
+
+pub fn compute_nullifier(_ scope: u256, _ secret_a: u256, _ secret_b: u256) -> u256 {
+    let inner = hash2(secret_a, secret_b)
+    hash2(scope, inner)
+}
+
+pub fn verify_preimage(_ a: u256, _ b: u256, _ expected_commitment: u256) -> bool {
+    hash2(a, b) == expected_commitment
+}
+
+pub fn verify_nullifier(
+    _ scope: u256,
+    _ secret_commitment: u256,
+    _ expected_nullifier: u256,
+) -> bool {
+    hash2(scope, secret_commitment) == expected_nullifier
+}
+
+#[test]
+fn test_poseidon_proof_commit_verify() {
+    let commitment = commit(42, 17)
+    assert(verify_preimage(42, 17, commitment))
+    assert(verify_preimage(42, 18, commitment) == false)
+}
+
+#[test]
+fn test_poseidon_proof_nullifier_verify() {
+    let nullifier = compute_nullifier(100, 42, 17)
+    let inner = commit(42, 17)
+    assert(verify_nullifier(100, inner, nullifier))
+}

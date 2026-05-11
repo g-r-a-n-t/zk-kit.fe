@@ -1,0 +1,785 @@
+/// Solidity-compatible ABI wrappers for zk-kit primitives.
+///
+/// The library ingots (`zkkit_*`) keep Fe-native APIs. This module exposes a
+/// stable ABI surface (selectors and fixed-size array parameters) for use from
+/// Solidity/Foundry parity harnesses and downstream contracts.
+use std::abi::sol
+use std::evm::Evm
+
+use zkkit_ec::baby_jubjub::Point
+use zkkit_merkle::merkle::{Keccak256Hasher, Poseidon2Hasher}
+use zkkit_proofs::bn254
+
+fn point_from_array(_ point: [u256; 2]) -> Point {
+    Point { x: point[0], y: point[1] }
+}
+
+fn point_to_array(_ point: Point) -> [u256; 2] {
+    [point.x, point.y]
+}
+
+fn g1_from_array(_ point: [u256; 2]) -> bn254::G1Point {
+    bn254::G1Point { x: point[0], y: point[1] }
+}
+
+/// Convert `[[x_imag, x_real], [y_imag, y_real]]` into a BN254 G2 point.
+///
+/// This matches the EVM pairing precompile input ordering (EIP-197 / alt_bn128).
+fn g2_from_array(_ point: [[u256; 2]; 2]) -> bn254::G2Point {
+    bn254::G2Point {
+        x_imag: point[0][0],
+        x_real: point[0][1],
+        y_imag: point[1][0],
+        y_real: point[1][1],
+    }
+}
+
+/// ABI wrapper for Poseidon hash functions used by zk-kit circuits.
+///
+/// The selectors intentionally match Solidity-style wrappers used by Foundry
+/// benches and downstream contracts.
+pub msg ZkKitPoseidonMsg {
+    #[selector = sol("hash2(uint256,uint256)")]
+    Hash2 { a: u256, b: u256 } -> u256,
+
+    #[selector = sol("hash3(uint256,uint256,uint256)")]
+    Hash3 { a: u256, b: u256, c: u256 } -> u256,
+
+    #[selector = sol("hash5(uint256,uint256,uint256,uint256,uint256)")]
+    Hash5 { a: u256, b: u256, c: u256, in_d: u256, in_e: u256 } -> u256,
+}
+
+pub contract ZkKitPoseidon {
+    init() {}
+
+    recv ZkKitPoseidonMsg {
+        Hash2 { a, b } -> u256 {
+            zkkit_poseidon::poseidon::hash2(a, b)
+        }
+
+        Hash3 { a, b, c } -> u256 {
+            zkkit_poseidon::poseidon_t4::hash3(a, b, c)
+        }
+
+        Hash5 { a, b, c, in_d, in_e } -> u256 {
+            zkkit_poseidon::poseidon::hash5(a, b, c, in_d, in_e)
+        }
+    }
+}
+
+/// ABI wrapper for the iden3/zk-kit Poseidon cipher single-block sponge.
+pub msg ZkKitPoseidonCipherMsg {
+    #[selector = sol("encryptBlock(uint256[3],uint256,uint256,uint256)")]
+    EncryptBlock { plaintext: [u256; 3], key_x: u256, key_y: u256, nonce: u256 } -> [u256; 4],
+
+    #[selector = sol("decryptBlock(uint256[4],uint256,uint256,uint256)")]
+    DecryptBlock { ciphertext: [u256; 4], key_x: u256, key_y: u256, nonce: u256 } -> [u256; 3],
+}
+
+pub contract ZkKitPoseidonCipher {
+    init() {}
+
+    recv ZkKitPoseidonCipherMsg {
+        EncryptBlock { plaintext, key_x, key_y, nonce } -> [u256; 4] {
+            zkkit_poseidon::poseidon_cipher::encrypt_block(plaintext, key_x, key_y, nonce)
+        }
+
+        DecryptBlock { ciphertext, key_x, key_y, nonce } -> [u256; 3] {
+            zkkit_poseidon::poseidon_cipher::decrypt_block(ciphertext, key_x, key_y, nonce)
+        }
+    }
+}
+
+pub msg ZkKitPoseidonProofMsg {
+    #[selector = sol("commit(uint256,uint256)")]
+    Commit { a: u256, b: u256 } -> u256,
+
+    #[selector = sol("scopedCommit(uint256,uint256)")]
+    ScopedCommit { scope: u256, secret: u256 } -> u256,
+
+    #[selector = sol("computeNullifier(uint256,uint256,uint256)")]
+    ComputeNullifier { scope: u256, secret_a: u256, secret_b: u256 } -> u256,
+
+    #[selector = sol("verifyPreimage(uint256,uint256,uint256)")]
+    VerifyPreimage { a: u256, b: u256, expected_commitment: u256 } -> bool,
+
+    #[selector = sol("verifyNullifier(uint256,uint256,uint256)")]
+    VerifyNullifier { scope: u256, secret_commitment: u256, expected_nullifier: u256 } -> bool,
+}
+
+pub contract ZkKitPoseidonProof {
+    init() {}
+
+    recv ZkKitPoseidonProofMsg {
+        Commit { a, b } -> u256 {
+            zkkit_poseidon::poseidon_proof::commit(a, b)
+        }
+
+        ScopedCommit { scope, secret } -> u256 {
+            zkkit_poseidon::poseidon_proof::scoped_commit(scope, secret)
+        }
+
+        ComputeNullifier { scope, secret_a, secret_b } -> u256 {
+            zkkit_poseidon::poseidon_proof::compute_nullifier(scope, secret_a, secret_b)
+        }
+
+        VerifyPreimage { a, b, expected_commitment } -> bool {
+            zkkit_poseidon::poseidon_proof::verify_preimage(a, b, expected_commitment)
+        }
+
+        VerifyNullifier { scope, secret_commitment, expected_nullifier } -> bool {
+            zkkit_poseidon::poseidon_proof::verify_nullifier(
+                scope,
+                secret_commitment,
+                expected_nullifier,
+            )
+        }
+    }
+}
+
+pub msg ZkKitBabyJubjubMsg {
+    #[selector = sol("identity()")]
+    Identity -> [u256; 2],
+
+    #[selector = sol("basePoint()")]
+    BasePoint -> [u256; 2],
+
+    #[selector = sol("add(uint256[2],uint256[2])")]
+    Add { p: [u256; 2], q: [u256; 2] } -> [u256; 2],
+
+    #[selector = sol("doublePoint(uint256[2])")]
+    DoublePoint { p: [u256; 2] } -> [u256; 2],
+
+    #[selector = sol("mulScalar(uint256[2],uint256)")]
+    MulScalar { p: [u256; 2], scalar: u256 } -> [u256; 2],
+
+    #[selector = sol("negate(uint256[2])")]
+    Negate { p: [u256; 2] } -> [u256; 2],
+
+    #[selector = sol("isOnCurve(uint256[2])")]
+    IsOnCurve { p: [u256; 2] } -> bool,
+
+    #[selector = sol("isInSubgroup(uint256[2])")]
+    IsInSubgroup { p: [u256; 2] } -> bool,
+}
+
+pub contract ZkKitBabyJubjub {
+    init() {}
+
+    recv ZkKitBabyJubjubMsg {
+        Identity -> [u256; 2] {
+            point_to_array(zkkit_ec::baby_jubjub::identity())
+        }
+
+        BasePoint -> [u256; 2] {
+            point_to_array(zkkit_ec::baby_jubjub::base_point())
+        }
+
+        Add { p, q } -> [u256; 2] {
+            point_to_array(
+                zkkit_ec::baby_jubjub::add(point_from_array(p), point_from_array(q)),
+            )
+        }
+
+        DoublePoint { p } -> [u256; 2] {
+            point_to_array(zkkit_ec::baby_jubjub::double(point_from_array(p)))
+        }
+
+        MulScalar { p, scalar } -> [u256; 2] {
+            point_to_array(
+                zkkit_ec::baby_jubjub::mul_scalar(point_from_array(p), scalar),
+            )
+        }
+
+        Negate { p } -> [u256; 2] {
+            point_to_array(zkkit_ec::baby_jubjub::negate(point_from_array(p)))
+        }
+
+        IsOnCurve { p } -> bool {
+            zkkit_ec::baby_jubjub::is_on_curve(point_from_array(p))
+        }
+
+        IsInSubgroup { p } -> bool {
+            zkkit_ec::baby_jubjub::is_in_subgroup(point_from_array(p))
+        }
+    }
+}
+
+pub msg ZkKitEcdhMsg {
+    #[selector = sol("derivePublicKey(uint256)")]
+    DerivePublicKey { private_key: u256 } -> [u256; 2],
+
+    #[selector = sol("generateSharedKey(uint256,uint256[2])")]
+    GenerateSharedKey { private_key: u256, public_key: [u256; 2] } -> u256,
+
+    #[selector = sol("generateSharedKeyUnchecked(uint256,uint256[2])")]
+    GenerateSharedKeyUnchecked { private_key: u256, public_key: [u256; 2] } -> u256,
+}
+
+pub contract ZkKitEcdh {
+    init() {}
+
+    recv ZkKitEcdhMsg {
+        DerivePublicKey { private_key } -> [u256; 2] {
+            point_to_array(zkkit_ec::ecdh::derive_public_key(private_key))
+        }
+
+        GenerateSharedKey { private_key, public_key } -> u256 {
+            zkkit_ec::ecdh::generate_shared_key(private_key, point_from_array(public_key))
+        }
+
+        GenerateSharedKeyUnchecked { private_key, public_key } -> u256 {
+            zkkit_ec::ecdh::generate_shared_key_unchecked(private_key, point_from_array(public_key))
+        }
+    }
+}
+
+pub msg ZkKitEddsaPoseidonMsg {
+    #[selector = sol("verify(uint256,uint256[2],uint256[2],uint256)")]
+    Verify { message: u256, pub_key: [u256; 2], r8: [u256; 2], s: u256 } -> bool,
+}
+
+pub contract ZkKitEddsaPoseidon {
+    init() {}
+
+    recv ZkKitEddsaPoseidonMsg {
+        Verify { message, pub_key, r8, s } -> bool {
+            zkkit_ec::eddsa_poseidon::verify(
+                message,
+                point_from_array(pub_key),
+                zkkit_ec::eddsa_poseidon::Signature { r8: point_from_array(r8), s },
+            )
+        }
+    }
+}
+
+pub msg ZkKitGroth16Msg {
+    #[selector = sol(
+        "verify(uint256[2],uint256[2][2],uint256[2][2],uint256[2][2],uint256[2],uint256[2],uint256[2],uint256[2][2],uint256[2],uint256)",
+    )]
+    Verify {
+        alpha1: [u256; 2],
+        beta2: [[u256; 2]; 2],
+        gamma2: [[u256; 2]; 2],
+        delta2: [[u256; 2]; 2],
+        ic0: [u256; 2],
+        ic1: [u256; 2],
+        proof_a: [u256; 2],
+        proof_b: [[u256; 2]; 2],
+        proof_c: [u256; 2],
+        input: u256,
+    } -> bool,
+}
+
+pub contract ZkKitGroth16 {
+    init() {}
+
+    recv ZkKitGroth16Msg {
+        Verify { alpha1, beta2, gamma2, delta2, ic0, ic1, proof_a, proof_b, proof_c, input } -> bool
+        uses (evm: mut Evm)
+        {
+            zkkit_proofs::groth16::verify(
+                zkkit_proofs::groth16::VerifyingKey {
+                    alpha1: g1_from_array(alpha1),
+                    beta2: g2_from_array(beta2),
+                    gamma2: g2_from_array(gamma2),
+                    delta2: g2_from_array(delta2),
+                    ic: [g1_from_array(ic0), g1_from_array(ic1)],
+                },
+                zkkit_proofs::groth16::Proof {
+                    a: g1_from_array(proof_a),
+                    b: g2_from_array(proof_b),
+                    c: g1_from_array(proof_c),
+                },
+                input,
+            )
+        }
+    }
+}
+
+/// Keccak-based Merkle API compatible with the Solidity reference benchmark.
+///
+/// `siblings` is fixed at 32 words for stable ABI and gas behavior. LeanIMT
+/// uses `siblings_len`; SMT uses `enables` as a 32-bit packed sibling mask.
+pub msg ZkKitMerkleMsg {
+    #[selector = sol("computeLeanIMTRoot(uint256,uint256,uint256,uint256[32])")]
+    ComputeLeanIMTRoot {
+        leaf: u256,
+        index: u256,
+        siblings_len: u256,
+        siblings: [u256; 32],
+    } -> u256,
+
+    #[selector = sol(
+        "verifyLeanIMT(uint256,uint256,uint256,uint256,uint256[32])",
+    )]
+    VerifyLeanIMT {
+        root: u256,
+        leaf: u256,
+        index: u256,
+        siblings_len: u256,
+        siblings: [u256; 32],
+    } -> bool,
+
+    #[selector = sol(
+        "updateLeanIMTRoot(uint256,uint256,uint256,uint256,uint256,uint256[32])",
+    )]
+    UpdateLeanIMTRoot {
+        current_root: u256,
+        old_leaf: u256,
+        new_leaf: u256,
+        index: u256,
+        siblings_len: u256,
+        siblings: [u256; 32],
+    } -> u256,
+
+    #[selector = sol("computeSMTRoot(uint256,uint256,uint256,uint256[32])")]
+    ComputeSMTRoot { leaf: u256, index: u256, enables: u256, siblings: [u256; 32] } -> u256,
+
+    #[selector = sol("verifySMT(uint256,uint256,uint256,uint256,uint256[32])")]
+    VerifySMT { root: u256, leaf: u256, index: u256, enables: u256, siblings: [u256; 32] } -> bool,
+
+    #[selector = sol(
+        "updateSMTRoot(uint256,uint256,uint256,uint256,uint256,uint256[32])",
+    )]
+    UpdateSMTRoot {
+        current_root: u256,
+        old_leaf: u256,
+        new_leaf: u256,
+        index: u256,
+        enables: u256,
+        siblings: [u256; 32],
+    } -> u256,
+}
+
+pub contract ZkKitMerkle {
+    init() {}
+
+    recv ZkKitMerkleMsg {
+        ComputeLeanIMTRoot { leaf, index, siblings_len, siblings } -> u256
+        uses (evm: mut Evm)
+        {
+            zkkit_merkle::merkle::lean_root_from_proof<Keccak256Hasher, 32>(
+                leaf,
+                index,
+                siblings_len,
+                siblings,
+            )
+        }
+
+        VerifyLeanIMT { root, leaf, index, siblings_len, siblings } -> bool
+        uses (evm: mut Evm)
+        {
+            zkkit_merkle::merkle::lean_verify<Keccak256Hasher, 32>(
+                root,
+                leaf,
+                index,
+                siblings_len,
+                siblings,
+            )
+        }
+
+        UpdateLeanIMTRoot {
+            current_root,
+            old_leaf,
+            new_leaf,
+            index,
+            siblings_len,
+            siblings,
+        } -> u256
+        uses (evm: mut Evm)
+        {
+            zkkit_merkle::merkle::lean_update_root<Keccak256Hasher, 32>(
+                current_root,
+                old_leaf,
+                new_leaf,
+                index,
+                siblings_len,
+                siblings,
+            )
+        }
+
+        ComputeSMTRoot { leaf, index, enables, siblings } -> u256
+        uses (evm: mut Evm)
+        {
+            zkkit_merkle::merkle::sparse_root<Keccak256Hasher, 32>(leaf, index, enables, siblings)
+        }
+
+        VerifySMT { root, leaf, index, enables, siblings } -> bool
+        uses (evm: mut Evm)
+        {
+            zkkit_merkle::merkle::sparse_verify<Keccak256Hasher, 32>(
+                root,
+                leaf,
+                index,
+                enables,
+                siblings,
+            )
+        }
+
+        UpdateSMTRoot { current_root, old_leaf, new_leaf, index, enables, siblings } -> u256
+        uses (evm: mut Evm)
+        {
+            zkkit_merkle::merkle::sparse_update_root<Keccak256Hasher, 32>(
+                current_root,
+                old_leaf,
+                new_leaf,
+                index,
+                enables,
+                siblings,
+            )
+        }
+    }
+}
+
+pub msg ZkKitMerkleProofMsg {
+    #[selector = sol("computeRoot(uint256[32],uint256,uint256)")]
+    ComputeRoot { proof: [u256; 32], proof_len: u256, leaf: u256 } -> u256,
+
+    #[selector = sol("verify(uint256[32],uint256,uint256,uint256)")]
+    Verify { proof: [u256; 32], proof_len: u256, root: u256, leaf: u256 } -> bool,
+}
+
+/// Sorted-pair Keccak Merkle proof wrapper compatible with Solady-style proofs.
+pub contract ZkKitMerkleProof {
+    init() {}
+
+    recv ZkKitMerkleProofMsg {
+        ComputeRoot { proof, proof_len, leaf } -> u256
+        uses (evm: mut Evm)
+        {
+            zkkit_merkle::merkle::sorted_root<Keccak256Hasher, 32>(proof, proof_len, leaf)
+        }
+
+        Verify { proof, proof_len, root, leaf } -> bool
+        uses (evm: mut Evm)
+        {
+            zkkit_merkle::merkle::sorted_verify<Keccak256Hasher, 32>(proof, proof_len, root, leaf)
+        }
+    }
+}
+
+/// Poseidon-based binary Merkle proof wrapper for IMT-style trees.
+pub msg ZkKitPoseidonMerkleMsg {
+    #[selector = sol("computeRoot(uint256,uint256,uint256[32])")]
+    ComputeRoot { leaf: u256, path_index: u256, siblings: [u256; 32] } -> u256,
+
+    #[selector = sol("verify(uint256,uint256,uint256[32],uint256)")]
+    Verify { leaf: u256, path_index: u256, siblings: [u256; 32], root: u256 } -> bool,
+
+    #[selector = sol("computeBinaryRoot(uint256,uint256,uint256,uint256[32])")]
+    ComputeBinaryRoot { leaf: u256, depth: u256, path_index: u256, siblings: [u256; 32] } -> u256,
+
+    #[selector = sol(
+        "verifyBinary(uint256,uint256,uint256,uint256,uint256[32])",
+    )]
+    VerifyBinary {
+        root: u256,
+        leaf: u256,
+        depth: u256,
+        path_index: u256,
+        siblings: [u256; 32],
+    } -> bool,
+}
+
+pub contract ZkKitPoseidonMerkle {
+    init() {}
+
+    recv ZkKitPoseidonMerkleMsg {
+        ComputeRoot { leaf, path_index, siblings } -> u256
+        uses (evm: mut Evm)
+        {
+            zkkit_merkle::merkle::binary_root<Poseidon2Hasher, 32>(leaf, 32, path_index, siblings)
+        }
+
+        Verify { leaf, path_index, siblings, root } -> bool
+        uses (evm: mut Evm)
+        {
+            zkkit_merkle::merkle::binary_verify<Poseidon2Hasher, 32>(
+                root,
+                leaf,
+                32,
+                path_index,
+                siblings,
+            )
+        }
+
+        ComputeBinaryRoot { leaf, depth, path_index, siblings } -> u256
+        uses (evm: mut Evm)
+        {
+            if depth > 32 {
+                evm.revert(offset: 0, len: 0)
+            }
+
+            zkkit_merkle::merkle::binary_root<Poseidon2Hasher, 32>(
+                leaf,
+                depth as usize,
+                path_index,
+                siblings,
+            )
+        }
+
+        VerifyBinary { root, leaf, depth, path_index, siblings } -> bool
+        uses (evm: mut Evm)
+        {
+            if depth > 32 {
+                evm.revert(offset: 0, len: 0)
+            }
+
+            zkkit_merkle::merkle::binary_verify<Poseidon2Hasher, 32>(
+                root,
+                leaf,
+                depth as usize,
+                path_index,
+                siblings,
+            )
+        }
+    }
+}
+
+#[test]
+fn test_poseidon_contract_hash2() uses (evm: mut Evm) {
+    let contract_addr = evm.create2<ZkKitPoseidon>(value: 0, args: (), salt: 3000)
+    let out: u256 = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitPoseidonMsg::Hash2 { a: 1, b: 2 },
+        )
+    assert(out == zkkit_poseidon::poseidon::hash2(1, 2))
+}
+
+#[test]
+fn test_poseidon_cipher_contract_roundtrip() uses (evm: mut Evm) {
+    let contract_addr = evm.create2<ZkKitPoseidonCipher>(value: 0, args: (), salt: 3001)
+    let plaintext: [u256; 3] = [1, 2, 3]
+    let ciphertext: [u256; 4] = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitPoseidonCipherMsg::EncryptBlock {
+                plaintext,
+                key_x: 12345,
+                key_y: 67890,
+                nonce: 42,
+            },
+        )
+    let recovered: [u256; 3] = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitPoseidonCipherMsg::DecryptBlock {
+                ciphertext,
+                key_x: 12345,
+                key_y: 67890,
+                nonce: 42,
+            },
+        )
+    assert(recovered[0] == 1)
+    assert(recovered[1] == 2)
+    assert(recovered[2] == 3)
+}
+
+#[test]
+fn test_poseidon_proof_contract_nullifier() uses (evm: mut Evm) {
+    let contract_addr = evm.create2<ZkKitPoseidonProof>(value: 0, args: (), salt: 3006)
+    let commitment: u256 = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitPoseidonProofMsg::Commit { a: 42, b: 17 },
+        )
+    let nullifier: u256 = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitPoseidonProofMsg::ComputeNullifier {
+                scope: 100,
+                secret_a: 42,
+                secret_b: 17,
+            },
+        )
+    let verified: bool = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitPoseidonProofMsg::VerifyNullifier {
+                scope: 100,
+                secret_commitment: commitment,
+                expected_nullifier: nullifier,
+            },
+        )
+    assert(verified)
+}
+
+#[test]
+fn test_baby_jubjub_contract_base_point() uses (evm: mut Evm) {
+    let contract_addr = evm.create2<ZkKitBabyJubjub>(value: 0, args: (), salt: 3007)
+    let base: [u256; 2] = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitBabyJubjubMsg::BasePoint {},
+        )
+    let on_curve: bool = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitBabyJubjubMsg::IsOnCurve { p: base },
+        )
+    assert(on_curve)
+}
+
+#[test]
+fn test_ecdh_contract_symmetry() uses (evm: mut Evm) {
+    let contract_addr = evm.create2<ZkKitEcdh>(value: 0, args: (), salt: 3008)
+    let alice_pk: [u256; 2] = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitEcdhMsg::DerivePublicKey { private_key: 7 },
+        )
+    let bob_pk: [u256; 2] = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitEcdhMsg::DerivePublicKey { private_key: 13 },
+        )
+    let alice_shared: u256 = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitEcdhMsg::GenerateSharedKeyUnchecked {
+                private_key: 7,
+                public_key: bob_pk,
+            },
+        )
+    let bob_shared: u256 = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitEcdhMsg::GenerateSharedKeyUnchecked {
+                private_key: 13,
+                public_key: alice_pk,
+            },
+        )
+    assert(alice_shared == bob_shared)
+}
+
+#[test]
+fn test_eddsa_contract_rejects_invalid_public_key() uses (evm: mut Evm) {
+    let contract_addr = evm.create2<ZkKitEddsaPoseidon>(value: 0, args: (), salt: 3009)
+    let base = point_to_array(zkkit_ec::baby_jubjub::base_point())
+    let verified: bool = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitEddsaPoseidonMsg::Verify { message: 42, pub_key: [1, 1], r8: base, s: 1 },
+        )
+    assert(verified == false)
+}
+
+#[test]
+fn test_merkle_contract_lean_and_smt_roots() uses (evm: mut Evm) {
+    let contract_addr = evm.create2<ZkKitMerkle>(value: 0, args: (), salt: 3002)
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = 7
+
+    let lean_root: u256 = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitMerkleMsg::ComputeLeanIMTRoot {
+                leaf: 5,
+                index: 1,
+                siblings_len: 1,
+                siblings,
+            },
+        )
+    assert(
+        lean_root == zkkit_merkle::merkle::Keccak256Hasher::hash2(7, 5),
+    )
+
+    let smt_root: u256 = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitMerkleMsg::ComputeSMTRoot { leaf: 5, index: 1, enables: 1, siblings },
+        )
+    assert(smt_root != 0)
+}
+
+#[test]
+fn test_merkle_proof_contract_sorted_root() uses (evm: mut Evm) {
+    let contract_addr = evm.create2<ZkKitMerkleProof>(value: 0, args: (), salt: 3004)
+    let mut proof: [u256; 32] = [0; 32]
+    proof[0] = 3
+    let root: u256 = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitMerkleProofMsg::ComputeRoot { proof, proof_len: 1, leaf: 5 },
+        )
+    assert(root == zkkit_merkle::merkle::Keccak256Hasher::hash2(3, 5))
+}
+
+#[test]
+fn test_poseidon_merkle_contract_binary_root() uses (evm: mut Evm) {
+    let contract_addr = evm.create2<ZkKitPoseidonMerkle>(value: 0, args: (), salt: 3003)
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = 2
+    let root: u256 = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitPoseidonMerkleMsg::ComputeBinaryRoot {
+                leaf: 1,
+                depth: 1,
+                path_index: 0,
+                siblings,
+            },
+        )
+    assert(root == zkkit_poseidon::poseidon::hash2(1, 2))
+}
+
+#[test]
+fn test_poseidon_merkle_contract_imt_compatible_selectors()
+uses (evm: mut Evm)
+{
+    let contract_addr = evm.create2<ZkKitPoseidonMerkle>(value: 0, args: (), salt: 3005)
+    let mut siblings: [u256; 32] = [0; 32]
+    siblings[0] = 2
+    siblings[1] = 3
+    let root: u256 = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitPoseidonMerkleMsg::ComputeRoot { leaf: 1, path_index: 0, siblings },
+        )
+    let verified: bool = evm
+        .call(
+            addr: contract_addr,
+            gas: 100000000,
+            value: 0,
+            message: ZkKitPoseidonMerkleMsg::Verify { leaf: 1, path_index: 0, siblings, root },
+        )
+    assert(verified)
+}

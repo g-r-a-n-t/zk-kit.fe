@@ -1,0 +1,53 @@
+/// BN254 field arithmetic helpers.
+///
+/// These wrap EVM arithmetic precompiles/opcodes exposed via `std::evm::crypto`
+/// (`addmod`, `mulmod`, `modexp`) so callers can write clearer, modulus-generic
+/// code.
+use std::evm::crypto::{addmod, modexp, mulmod}
+
+/// BN254 scalar field modulus (a.k.a. `r`).
+pub const BN254_SCALAR_FIELD: u256 = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+/// BN254 base field modulus (a.k.a. `p`).
+pub const BN254_BASE_FIELD: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+
+/// Addition modulo `MODULUS`.
+pub fn add<const MODULUS: u256>(_ a: u256, _ b: u256) -> u256 {
+    addmod(a, b, MODULUS)
+}
+
+/// Subtraction modulo `MODULUS`.
+pub fn sub<const MODULUS: u256>(_ a: u256, _ b: u256) -> u256 {
+    addmod(a, MODULUS - (b % MODULUS), MODULUS)
+}
+
+/// Multiplication modulo `MODULUS`.
+pub fn mul<const MODULUS: u256>(_ a: u256, _ b: u256) -> u256 {
+    mulmod(a, b, MODULUS)
+}
+
+/// Modular exponentiation.
+pub fn exp<const MODULUS: u256>(_ base: u256, _ exponent: u256) -> u256 {
+    modexp(base, exponent, MODULUS)
+}
+
+/// Multiplicative inverse modulo `MODULUS` via Fermat's little theorem.
+#[arithmetic(unchecked)]
+pub fn inv<const MODULUS: u256>(_ a: u256) -> u256 {
+    modexp(a, MODULUS - 2, MODULUS)
+}
+
+/// Additive inverse modulo `MODULUS`.
+pub fn neg<const MODULUS: u256>(_ a: u256) -> u256 {
+    let reduced = a % MODULUS
+    if reduced == 0 { 0 } else { MODULUS - reduced }
+}
+
+#[test]
+fn test_field_add_sub_mul_inv() {
+    let p = BN254_SCALAR_FIELD
+    assert(add<BN254_SCALAR_FIELD>(p - 1, 2) == 1)
+    assert(sub<BN254_SCALAR_FIELD>(1, 2) == p - 1)
+    assert(mul<BN254_SCALAR_FIELD>(3, 7) == 21)
+    let inv3 = inv<BN254_SCALAR_FIELD>(3)
+    assert(mul<BN254_SCALAR_FIELD>(3, inv3) == 1)
+}

@@ -1,0 +1,132 @@
+/// Baby Jubjub twisted Edwards curve operations over the BN254 scalar field.
+use std::evm::crypto::{addmod, mulmod}
+
+use zkkit_core::field
+
+/// Field modulus for Baby Jubjub arithmetic (same as the BN254 scalar field).
+pub const FIELD_MODULUS: u256 = field::BN254_SCALAR_FIELD
+pub const A_COEFF: u256 = 168700
+pub const D_COEFF: u256 = 168696
+
+pub const BASE_POINT_X: u256 = 5299619240641551281634865583518297030282874472190772894086521144482721001553
+pub const BASE_POINT_Y: u256 = 16950150798460657717958625567821834550301663161624707787222815936182638968203
+pub const SUBGROUP_ORDER: u256 = 2736030358979909402780800718157159386076813972158567259200215660948447373041
+
+/// Backwards-compatibility aliases for older callers.
+pub const FIELD: u256 = FIELD_MODULUS
+pub const A: u256 = A_COEFF
+pub const D: u256 = D_COEFF
+pub const BASE_X: u256 = BASE_POINT_X
+pub const BASE_Y: u256 = BASE_POINT_Y
+pub const SUBORDER: u256 = SUBGROUP_ORDER
+
+/// Affine point on the Baby Jubjub curve.
+pub struct Point { pub x: u256, pub y: u256 }
+
+pub fn identity() -> Point {
+    Point { x: 0, y: 1 }
+}
+
+pub fn base_point() -> Point {
+    Point { x: BASE_POINT_X, y: BASE_POINT_Y }
+}
+
+pub fn add(_ p: Point, _ q: Point) -> Point {
+    let x1y2 = mulmod(p.x, q.y, FIELD_MODULUS)
+    let y1x2 = mulmod(p.y, q.x, FIELD_MODULUS)
+    let x1x2 = mulmod(p.x, q.x, FIELD_MODULUS)
+    let y1y2 = mulmod(p.y, q.y, FIELD_MODULUS)
+    let dx1x2y1y2 = mulmod(D_COEFF, mulmod(x1x2, y1y2, FIELD_MODULUS), FIELD_MODULUS)
+
+    let x_num = addmod(x1y2, y1x2, FIELD_MODULUS)
+    let y_num = addmod(
+        y1y2,
+        FIELD_MODULUS - mulmod(A_COEFF, x1x2, FIELD_MODULUS),
+        FIELD_MODULUS,
+    )
+    let x_den = addmod(1, dx1x2y1y2, FIELD_MODULUS)
+    let y_den = addmod(1, FIELD_MODULUS - dx1x2y1y2, FIELD_MODULUS)
+
+    Point {
+        x: mulmod(x_num, field::inv<FIELD_MODULUS>(x_den), FIELD_MODULUS),
+        y: mulmod(y_num, field::inv<FIELD_MODULUS>(y_den), FIELD_MODULUS),
+    }
+}
+
+pub fn double(_ p: Point) -> Point {
+    add(p, p)
+}
+
+pub fn mul_scalar(_ point: Point, _ scalar: u256) -> Point {
+    let mut rx: u256 = 0
+    let mut ry: u256 = 1
+    let mut cx: u256 = point.x
+    let mut cy: u256 = point.y
+    let mut s = scalar
+
+    while s > 0 {
+        if (s & 1) == 1 {
+            let r = add(Point { x: rx, y: ry }, Point { x: cx, y: cy })
+            rx = r.x
+            ry = r.y
+        }
+
+        let doubled = double(Point { x: cx, y: cy })
+        cx = doubled.x
+        cy = doubled.y
+        s = s >> 1
+    }
+
+    Point { x: rx, y: ry }
+}
+
+pub fn negate(_ p: Point) -> Point {
+    Point { x: field::neg<FIELD_MODULUS>(p.x), y: p.y }
+}
+
+pub fn is_on_curve(_ p: Point) -> bool {
+    let x2 = mulmod(p.x, p.x, FIELD_MODULUS)
+    let y2 = mulmod(p.y, p.y, FIELD_MODULUS)
+    let lhs = addmod(mulmod(A_COEFF, x2, FIELD_MODULUS), y2, FIELD_MODULUS)
+    let rhs = addmod(
+        1,
+        mulmod(D_COEFF, mulmod(x2, y2, FIELD_MODULUS), FIELD_MODULUS),
+        FIELD_MODULUS,
+    )
+    lhs == rhs
+}
+
+pub fn is_in_subgroup(_ p: Point) -> bool {
+    let result = mul_scalar(p, SUBGROUP_ORDER)
+    result.x == 0 && result.y == 1
+}
+
+#[test]
+fn test_baby_jubjub_identity_addition() {
+    let base = base_point()
+    let result = add(Point { x: base.x, y: base.y }, identity())
+    assert(result.x == base.x)
+    assert(result.y == base.y)
+}
+
+#[test]
+fn test_baby_jubjub_scalar_mul_one() {
+    let base = base_point()
+    let result = mul_scalar(Point { x: base.x, y: base.y }, 1)
+    assert(result.x == base.x)
+    assert(result.y == base.y)
+}
+
+#[test]
+fn test_baby_jubjub_base_point_on_curve() {
+    assert(is_on_curve(base_point()))
+}
+
+#[test]
+fn test_baby_jubjub_negate_add_is_identity() {
+    let base = base_point()
+    let neg = negate(Point { x: base.x, y: base.y })
+    let result = add(base, neg)
+    assert(result.x == 0)
+    assert(result.y == 1)
+}

@@ -1,0 +1,38 @@
+/// EdDSA verification over Baby Jubjub with Poseidon-based message hashing.
+use std::evm::crypto::mulmod
+
+use super::baby_jubjub::{Point, SUBGROUP_ORDER, add, base_point, is_on_curve, mul_scalar}
+use zkkit_poseidon::poseidon::hash5
+
+pub struct Signature { pub r8: Point, pub s: u256 }
+
+pub fn verify(_ message: u256, _ pub_key: Point, _ signature: Signature) -> bool {
+    if !is_on_curve(signature.r8) {
+        return false
+    }
+    if !is_on_curve(pub_key) {
+        return false
+    }
+    if signature.s >= SUBGROUP_ORDER {
+        return false
+    }
+
+    let r8x = signature.r8.x
+    let r8y = signature.r8.y
+    let ax = pub_key.x
+    let ay = pub_key.y
+
+    let challenge = hash5(r8x, r8y, ax, ay, message)
+    let left = mul_scalar(base_point(), signature.s)
+    let challenge_times_8 = mulmod(challenge, 8, SUBGROUP_ORDER)
+    let h_pub = mul_scalar(Point { x: ax, y: ay }, challenge_times_8)
+    let right = add(Point { x: r8x, y: r8y }, h_pub)
+
+    left.x == right.x && left.y == right.y
+}
+
+#[test]
+fn test_eddsa_rejects_invalid_public_key() {
+    let sig = Signature { r8: base_point(), s: 1 }
+    assert(verify(42, Point { x: 1, y: 1 }, sig) == false)
+}

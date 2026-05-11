@@ -1,0 +1,5 @@
+/// Shared constants used across zk-kit primitives.
+pub const MAX_DEPTH: usize = 32
+
+/// BN254 scalar field (same modulus used by Poseidon and most zk-kit circuits).
+pub const SNARK_SCALAR_FIELD: u256 = super::field::BN254_SCALAR_FIELD

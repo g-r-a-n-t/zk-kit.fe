@@ -1,0 +1,12 @@
+# Ingot config
+[ingot]
+name = "zkkit_contracts"
+version = "0.1.0"
+
+[dependencies]
+zkkit_core = true
+zkkit_poseidon = true
+zkkit_merkle = true
+zkkit_ec = true
+zkkit_proofs = true
+

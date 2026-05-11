@@ -1,0 +1,36 @@
+/// Baby Jubjub ECDH key agreement helpers.
+use super::baby_jubjub::{Point, base_point, is_in_subgroup, is_on_curve, mul_scalar}
+
+pub fn derive_public_key(_ private_key: u256) -> Point {
+    mul_scalar(base_point(), private_key)
+}
+
+pub fn generate_shared_key(_ private_key: u256, _ public_key: Point) -> u256 {
+    assert(is_on_curve(Point { x: public_key.x, y: public_key.y }))
+    assert(is_in_subgroup(Point { x: public_key.x, y: public_key.y }))
+    generate_shared_key_unchecked(private_key, public_key)
+}
+
+pub fn generate_shared_key_unchecked(_ private_key: u256, _ public_key: Point) -> u256 {
+    let shared_point = mul_scalar(public_key, private_key)
+    shared_point.x
+}
+
+#[test]
+fn test_ecdh_symmetry() {
+    let alice_sk: u256 = 7
+    let bob_sk: u256 = 13
+    let alice_pk = derive_public_key(alice_sk)
+    let bob_pk = derive_public_key(bob_sk)
+    let alice_shared = generate_shared_key_unchecked(alice_sk, Point { x: bob_pk.x, y: bob_pk.y })
+    let bob_shared = generate_shared_key_unchecked(bob_sk, Point { x: alice_pk.x, y: alice_pk.y })
+    assert(alice_shared == bob_shared)
+}
+
+#[test]
+fn test_ecdh_public_key_derivation() {
+    let pk = derive_public_key(1)
+    let base = base_point()
+    assert(pk.x == base.x)
+    assert(pk.y == base.y)
+}

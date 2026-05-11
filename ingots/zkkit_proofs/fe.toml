@@ -1,0 +1,8 @@
+# Ingot config
+[ingot]
+name = "zkkit_proofs"
+version = "0.1.0"
+
+[dependencies]
+zkkit_core = true
+

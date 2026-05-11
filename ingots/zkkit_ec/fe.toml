@@ -1,0 +1,9 @@
+# Ingot config
+[ingot]
+name = "zkkit_ec"
+version = "0.1.0"
+
+[dependencies]
+zkkit_core = true
+zkkit_poseidon = true
+

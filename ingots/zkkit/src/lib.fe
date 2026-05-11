@@ -1,0 +1,11 @@
+/// Facade ingot for importing zk-kit primitives from one dependency.
+///
+/// This ingot intentionally re-exports modules from the implementation ingots
+/// in `../zkkit_*`.
+pub use zkkit_core
+pub use zkkit_poseidon
+pub use zkkit_merkle
+pub use zkkit_trees
+pub use zkkit_ec
+pub use zkkit_proofs
+pub use zkkit_contracts

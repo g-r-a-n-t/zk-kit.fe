@@ -1,0 +1,12 @@
+# Workspace config
+[workspace]
+name = "zk-kit"
+version = "0.1.0"
+
+# Members can be a flat array or a table with main/dev groups.
+# Canonical member layout lives under `ingots/`.
+members = ["ingots/*"]
+# members = { main = ["packages/*"], dev = ["examples/*"] }
+
+# Paths to exclude from member discovery.
+exclude = ["target"]

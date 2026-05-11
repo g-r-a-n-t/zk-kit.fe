@@ -1,0 +1,755 @@
+/// Stateful LeanIMT implementation (Poseidon-based) with fixed-capacity leaf map.
+///
+/// Notes:
+/// - The tree state tracks `side_nodes` (one per level) to support incremental
+///   inserts without recomputing the whole tree.
+/// - Leaf membership is tracked via a small fixed-capacity open-addressed map
+///   keyed by `leaf`. The stored value is a 1-based leaf index.
+/// - Map occupancy flags are stored as `u256` words (instead of `u8`) to avoid
+///   sub-word fields in memory structs on some Fe toolchains.
+use std::evm::effects::assert
+
+use zkkit_core::common::{MAX_DEPTH, SNARK_SCALAR_FIELD}
+use zkkit_poseidon::poseidon::hash2
+
+const MAX_DEPTH_PLUS_ONE: usize = MAX_DEPTH + 1
+const LEAN_MAP_CAPACITY: usize = 256
+const LEAN_MAP_CAPACITY_U256: u256 = 256
+const LEAN_BATCH_MAX: usize = 64
+
+pub enum LeanIMTError {
+    None,
+    WrongSiblingNodes,
+    LeafGreaterThanSnarkScalarField,
+    LeafCannotBeZero,
+    LeafAlreadyExists,
+    LeafDoesNotExist,
+    DepthNotSupported,
+    SparseMapFull,
+}
+
+impl LeanIMTError {
+    pub fn is_none(self) -> bool {
+        match self {
+            LeanIMTError::None => true,
+            _ => false,
+        }
+    }
+    pub fn code(self) -> u256 {
+        match self {
+            LeanIMTError::None => 0,
+            LeanIMTError::WrongSiblingNodes => 1,
+            LeanIMTError::LeafGreaterThanSnarkScalarField => 2,
+            LeanIMTError::LeafCannotBeZero => 3,
+            LeanIMTError::LeafAlreadyExists => 4,
+            LeanIMTError::LeafDoesNotExist => 5,
+            LeanIMTError::DepthNotSupported => 6,
+            LeanIMTError::SparseMapFull => 7,
+        }
+    }
+}
+
+/// Stateful LeanIMT implementation (Poseidon-based).
+pub struct LeanIMT {
+    pub size: usize,
+    pub depth: usize,
+    pub side_nodes: [u256; MAX_DEPTH_PLUS_ONE],
+    /// Occupancy flags for the open-addressed leaf map.
+    ///
+    /// This is intentionally `u256` rather than `u8` to avoid sub-word fields in
+    /// memory structs on some Fe toolchains.
+    pub leaf_used: [u256; LEAN_MAP_CAPACITY],
+    pub leaf_keys: [u256; LEAN_MAP_CAPACITY],
+    pub leaf_values: [u256; LEAN_MAP_CAPACITY],
+}
+
+/// Backwards-compatibility alias for older callers.
+pub type LeanIMTData = LeanIMT
+
+impl LeanIMT {
+    pub fn empty() -> Self {
+        LeanIMT {
+            size: 0,
+            depth: 0,
+            side_nodes: [0; MAX_DEPTH_PLUS_ONE],
+            leaf_used: [0; LEAN_MAP_CAPACITY],
+            leaf_keys: [0; LEAN_MAP_CAPACITY],
+            leaf_values: [0; LEAN_MAP_CAPACITY],
+        }
+    }
+
+    fn leaf_get_value(self, _ leaf: u256) -> (bool, u256) {
+        let mut slot = (leaf % LEAN_MAP_CAPACITY_U256) as usize
+        let mut i: usize = 0
+
+        while i < LEAN_MAP_CAPACITY {
+            if self.leaf_used[slot] == 0 {
+                return (false, 0)
+            }
+
+            if self.leaf_keys[slot] == leaf {
+                if self.leaf_values[slot] == 0 {
+                    return (false, 0)
+                }
+                return (true, self.leaf_values[slot])
+            }
+
+            slot += 1
+            if slot == LEAN_MAP_CAPACITY {
+                slot = 0
+            }
+            i += 1
+        }
+
+        (false, 0)
+    }
+
+    fn leaf_set_value(mut self, _ leaf: u256, _ value: u256) -> LeanIMTError {
+        let mut slot = (leaf % LEAN_MAP_CAPACITY_U256) as usize
+        let mut first_tombstone: usize = LEAN_MAP_CAPACITY
+        let mut i: usize = 0
+
+        while i < LEAN_MAP_CAPACITY {
+            if self.leaf_used[slot] == 0 {
+                if first_tombstone != LEAN_MAP_CAPACITY {
+                    slot = first_tombstone
+                }
+                self.leaf_used[slot] = 1
+                self.leaf_keys[slot] = leaf
+                self.leaf_values[slot] = value
+                return LeanIMTError::None
+            }
+
+            if self.leaf_keys[slot] == leaf {
+                self.leaf_values[slot] = value
+                return LeanIMTError::None
+            }
+
+            // A slot with `used=1` but `value=0` is a tombstone. Keep searching
+            // for an exact key match, but remember the first tombstone so we
+            // can reuse it if we end up inserting a new key.
+            if self.leaf_values[slot] == 0 && first_tombstone == LEAN_MAP_CAPACITY {
+                first_tombstone = slot
+            }
+
+            slot += 1
+            if slot == LEAN_MAP_CAPACITY {
+                slot = 0
+            }
+            i += 1
+        }
+
+        if first_tombstone != LEAN_MAP_CAPACITY {
+            self.leaf_used[first_tombstone] = 1
+            self.leaf_keys[first_tombstone] = leaf
+            self.leaf_values[first_tombstone] = value
+            return LeanIMTError::None
+        }
+
+        LeanIMTError::SparseMapFull
+    }
+
+    fn leaf_delete(mut self, _ leaf: u256) {
+        // Deletion leaves `leaf_used=1` intact (tombstone) so probe sequences
+        // for other keys remain valid.
+        let mut slot = (leaf % LEAN_MAP_CAPACITY_U256) as usize
+        let mut i: usize = 0
+
+        while i < LEAN_MAP_CAPACITY {
+            if self.leaf_used[slot] == 0 {
+                return
+            }
+
+            if self.leaf_keys[slot] == leaf {
+                self.leaf_values[slot] = 0
+                return
+            }
+
+            slot += 1
+            if slot == LEAN_MAP_CAPACITY {
+                slot = 0
+            }
+            i += 1
+        }
+    }
+    pub fn has(self, _ leaf: u256) -> bool {
+        let (ok, _value) = self.leaf_get_value(leaf)
+        ok
+    }
+    pub fn index_of(self, _ leaf: u256) -> (usize, LeanIMTError) {
+        let (ok, value) = self.leaf_get_value(leaf)
+        if !ok {
+            return (0, LeanIMTError::LeafDoesNotExist)
+        }
+
+        ((value - 1) as usize, LeanIMTError::None)
+    }
+    pub fn root(self) -> u256 {
+        self.side_nodes[self.depth]
+    }
+    pub fn insert(mut self, _ leaf: u256) -> (u256, LeanIMTError) {
+        if leaf >= SNARK_SCALAR_FIELD {
+            return (0, LeanIMTError::LeafGreaterThanSnarkScalarField)
+        }
+        if leaf == 0 {
+            return (0, LeanIMTError::LeafCannotBeZero)
+        }
+        if self.has(leaf) {
+            return (0, LeanIMTError::LeafAlreadyExists)
+        }
+
+        let mut index = self.size
+        let mut tree_depth = self.depth
+
+        if tree_depth > MAX_DEPTH {
+            return (0, LeanIMTError::DepthNotSupported)
+        }
+
+        if (1 << tree_depth) < index + 1 {
+            tree_depth += 1
+        }
+        if tree_depth > MAX_DEPTH {
+            return (0, LeanIMTError::DepthNotSupported)
+        }
+
+        self.depth = tree_depth
+        let mut node = leaf
+
+        let mut level: usize = 0
+        while level < tree_depth {
+            if ((index >> level) & 1) == 1 {
+                node = hash2(self.side_nodes[level], node)
+            } else {
+                self.side_nodes[level] = node
+            }
+
+            level += 1
+        }
+
+        index += 1
+        self.size = index
+        self.side_nodes[tree_depth] = node
+        let err = self.leaf_set_value(leaf, index as u256)
+        if !err.is_none() {
+            return (0, err)
+        }
+
+        (node, LeanIMTError::None)
+    }
+    pub fn insert_many(mut self, _ leaves: [u256; LEAN_BATCH_MAX], _ count: usize) -> (
+        u256,
+        LeanIMTError,
+    ) {
+        if count > LEAN_BATCH_MAX {
+            return (0, LeanIMTError::DepthNotSupported)
+        }
+
+        let mut i: usize = 0
+        while i < count {
+            let leaf = leaves[i]
+            if leaf >= SNARK_SCALAR_FIELD {
+                return (0, LeanIMTError::LeafGreaterThanSnarkScalarField)
+            }
+            if leaf == 0 {
+                return (0, LeanIMTError::LeafCannotBeZero)
+            }
+            if self.has(leaf) {
+                return (0, LeanIMTError::LeafAlreadyExists)
+            }
+
+            let mut j: usize = 0
+            while j < i {
+                if leaves[j] == leaf {
+                    return (0, LeanIMTError::LeafAlreadyExists)
+                }
+                j += 1
+            }
+
+            i += 1
+        }
+
+        let mut root = self.root()
+        i = 0
+        while i < count {
+            let (new_root, err) = self.insert(leaves[i])
+            if !err.is_none() {
+                return (0, err)
+            }
+            root = new_root
+            i += 1
+        }
+
+        (root, LeanIMTError::None)
+    }
+    pub fn update(
+        mut self,
+        old_leaf: u256,
+        new_leaf: u256,
+        _ siblings: [u256; MAX_DEPTH],
+        _ sibling_count: usize,
+    ) -> (u256, LeanIMTError) {
+        if new_leaf >= SNARK_SCALAR_FIELD {
+            return (0, LeanIMTError::LeafGreaterThanSnarkScalarField)
+        }
+        let (old_exists, old_leaf_value) = self.leaf_get_value(old_leaf)
+        if !old_exists {
+            return (0, LeanIMTError::LeafDoesNotExist)
+        }
+        let (new_exists, _new_leaf_value) = self.leaf_get_value(new_leaf)
+        if new_leaf != 0 && new_exists {
+            return (0, LeanIMTError::LeafAlreadyExists)
+        }
+
+        let index = (old_leaf_value - 1) as usize
+
+        let mut node = new_leaf
+        let mut old_root = old_leaf
+        let last_index = self.size - 1
+        let tree_depth = self.depth
+        let mut i: usize = 0
+        let mut level: usize = 0
+
+        while level < tree_depth {
+            if ((index >> level) & 1) == 1 {
+                if i >= sibling_count || siblings[i] >= SNARK_SCALAR_FIELD {
+                    return (0, LeanIMTError::LeafGreaterThanSnarkScalarField)
+                }
+
+                node = hash2(siblings[i], node)
+                old_root = hash2(siblings[i], old_root)
+                i += 1
+            } else {
+                if (index >> level) != (last_index >> level) {
+                    if i >= sibling_count || siblings[i] >= SNARK_SCALAR_FIELD {
+                        return (0, LeanIMTError::LeafGreaterThanSnarkScalarField)
+                    }
+
+                    if self.side_nodes[level] == old_root {
+                        self.side_nodes[level] = node
+                    }
+
+                    node = hash2(node, siblings[i])
+                    old_root = hash2(old_root, siblings[i])
+                    i += 1
+                } else {
+                    self.side_nodes[level] = node
+                }
+            }
+
+            level += 1
+        }
+
+        if old_root != self.side_nodes[self.depth] {
+            return (0, LeanIMTError::WrongSiblingNodes)
+        }
+
+        self.side_nodes[tree_depth] = node
+
+        if new_leaf != 0 {
+            let (ok, value) = self.leaf_get_value(old_leaf)
+            if !ok {
+                return (0, LeanIMTError::LeafDoesNotExist)
+            }
+            let err = self.leaf_set_value(new_leaf, value)
+            if !err.is_none() {
+                return (0, err)
+            }
+        }
+
+        self.leaf_delete(old_leaf)
+        (node, LeanIMTError::None)
+    }
+    pub fn remove(
+        mut self,
+        _ old_leaf: u256,
+        _ siblings: [u256; MAX_DEPTH],
+        _ sibling_count: usize,
+    ) -> (u256, LeanIMTError) {
+        self.update(old_leaf: old_leaf, new_leaf: 0, siblings, sibling_count)
+    }
+}
+
+const LEAN_TEST_MAX_LEAVES: usize = 16
+
+fn lean_root_from_slots(_ slots: [u256; LEAN_TEST_MAX_LEAVES], _ slot_count: usize) -> u256 {
+    if slot_count == 0 {
+        return 0
+    }
+
+    let mut current: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+    let mut copy_index: usize = 0
+    while copy_index < LEAN_TEST_MAX_LEAVES {
+        current[copy_index] = slots[copy_index]
+        copy_index += 1
+    }
+    let mut current_count = slot_count
+
+    while current_count > 1 {
+        let mut next: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+        let mut next_count: usize = 0
+        let mut i: usize = 0
+
+        while i < current_count {
+            if i + 1 < current_count {
+                next[next_count] = hash2(current[i], current[i + 1])
+                i += 2
+            } else {
+                next[next_count] = current[i]
+                i += 1
+            }
+
+            next_count += 1
+        }
+
+        copy_index = 0
+        while copy_index < LEAN_TEST_MAX_LEAVES {
+            current[copy_index] = next[copy_index]
+            copy_index += 1
+        }
+        current_count = next_count
+    }
+
+    current[0]
+}
+
+fn lean_proof_from_slots(
+    _ slots: [u256; LEAN_TEST_MAX_LEAVES],
+    _ slot_count: usize,
+    _ target_index: usize,
+) -> ([u256; MAX_DEPTH], usize) {
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    let mut sibling_count: usize = 0
+    let mut current: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+    let mut copy_index: usize = 0
+    while copy_index < LEAN_TEST_MAX_LEAVES {
+        current[copy_index] = slots[copy_index]
+        copy_index += 1
+    }
+    let mut current_count = slot_count
+    let mut index = target_index
+
+    while current_count > 1 {
+        if index % 2 == 1 {
+            siblings[sibling_count] = current[index - 1]
+            sibling_count += 1
+        } else if index + 1 < current_count {
+            siblings[sibling_count] = current[index + 1]
+            sibling_count += 1
+        }
+
+        let mut next: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+        let mut next_count: usize = 0
+        let mut i: usize = 0
+
+        while i < current_count {
+            if i + 1 < current_count {
+                next[next_count] = hash2(current[i], current[i + 1])
+                i += 2
+            } else {
+                next[next_count] = current[i]
+                i += 1
+            }
+
+            next_count += 1
+        }
+
+        copy_index = 0
+        while copy_index < LEAN_TEST_MAX_LEAVES {
+            current[copy_index] = next[copy_index]
+            copy_index += 1
+        }
+        current_count = next_count
+        index /= 2
+    }
+
+    (siblings, sibling_count)
+}
+
+#[test]
+fn test_lean_insert_has_index_and_root() {
+    let mut tree = LeanIMT::empty()
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+    assert(tree.has(1))
+    assert(!tree.has(2))
+
+    let (idx, err) = tree.index_of(1)
+    assert(err.code() == LeanIMTError::None.code())
+    assert(idx == 0)
+
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == LeanIMTError::None.code())
+    assert(tree.root() == hash2(1, 2))
+}
+
+#[test]
+fn test_lean_insert_many_update_remove_roundtrip() {
+    let mut tree = LeanIMT::empty()
+    let mut batch: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    batch[0] = 1
+    batch[1] = 2
+    batch[2] = 3
+
+    let (_root, err) = tree.insert_many(batch, 3)
+    assert(err.code() == LeanIMTError::None.code())
+    assert(tree.root() == hash2(hash2(1, 2), 3))
+
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 1
+    siblings[1] = 3
+    let (_root, err) = tree.update(old_leaf: 2, new_leaf: 9, siblings, 2)
+    assert(err.code() == LeanIMTError::None.code())
+    assert(tree.root() == hash2(hash2(1, 9), 3))
+
+    let mut remove_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    remove_siblings[0] = hash2(1, 9)
+    let (_root, err) = tree.remove(3, remove_siblings, 1)
+    assert(err.code() == LeanIMTError::None.code())
+    assert(tree.root() == hash2(hash2(1, 9), 0))
+
+    assert(!tree.has(3))
+}
+
+#[test]
+fn test_lean_insert_many_error_cases() {
+    let mut too_many: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    let mut tree = LeanIMT::empty()
+
+    let (_root, err) = tree.insert_many(too_many, LEAN_BATCH_MAX + 1)
+    assert(err.code() == LeanIMTError::DepthNotSupported.code())
+
+    let mut invalid_leaf: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    invalid_leaf[0] = SNARK_SCALAR_FIELD
+    let (_root, err) = tree.insert_many(invalid_leaf, 1)
+    assert(
+        err.code() == LeanIMTError::LeafGreaterThanSnarkScalarField.code(),
+    )
+
+    let mut zero_leaf: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    zero_leaf[0] = 0
+    let (_root, err) = tree.insert_many(zero_leaf, 1)
+    assert(err.code() == LeanIMTError::LeafCannotBeZero.code())
+
+    let mut duplicate_batch: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    duplicate_batch[0] = 7
+    duplicate_batch[1] = 7
+    let (_root, err) = tree.insert_many(duplicate_batch, 2)
+    assert(err.code() == LeanIMTError::LeafAlreadyExists.code())
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let mut duplicate_existing: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    duplicate_existing[0] = 1
+    let (_root, err) = tree.insert_many(duplicate_existing, 1)
+    assert(err.code() == LeanIMTError::LeafAlreadyExists.code())
+}
+
+#[test]
+fn test_lean_insert_many_when_tree_is_not_empty() {
+    let mut tree = LeanIMT::empty()
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let mut batch: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    batch[0] = 2
+    batch[1] = 3
+    batch[2] = 4
+
+    let (_root, err) = tree.insert_many(batch, 3)
+    assert(err.code() == LeanIMTError::None.code())
+    assert(tree.root() == hash2(hash2(1, 2), hash2(3, 4)))
+    assert(tree.has(1))
+    assert(tree.has(2))
+    assert(tree.has(3))
+    assert(tree.has(4))
+}
+
+#[test]
+fn test_lean_update_rejects_existing_and_removed_leaves() {
+    let mut tree = LeanIMT::empty()
+    let mut batch: [u256; LEAN_BATCH_MAX] = [0; LEAN_BATCH_MAX]
+    batch[0] = 1
+    batch[1] = 2
+
+    let (_root, err) = tree.insert_many(batch, 2)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let mut siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    siblings[0] = 2
+
+    let (_root, err) = tree.update(old_leaf: 1, new_leaf: 2, siblings, 1)
+    assert(err.code() == LeanIMTError::LeafAlreadyExists.code())
+
+    let mut remove_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    remove_siblings[0] = 1
+    let (_root, err) = tree.remove(2, remove_siblings, 1)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let (_root, err) = tree.update(old_leaf: 2, new_leaf: 3, siblings, 1)
+    assert(err.code() == LeanIMTError::LeafDoesNotExist.code())
+}
+
+#[test]
+fn test_lean_error_cases() {
+    let mut tree = LeanIMT::empty()
+    let (_root, err) = tree.insert(0)
+    assert(err.code() == LeanIMTError::LeafCannotBeZero.code())
+    let (_root, err) = tree.insert(SNARK_SCALAR_FIELD)
+    assert(
+        err.code() == LeanIMTError::LeafGreaterThanSnarkScalarField.code(),
+    )
+
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+    let (_root, err) = tree.insert(2)
+    assert(err.code() == LeanIMTError::None.code())
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == LeanIMTError::LeafAlreadyExists.code())
+
+    let mut wrong_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    wrong_siblings[0] = 3
+    let (_root, err) = tree.update(old_leaf: 1, new_leaf: 7, wrong_siblings, 1)
+    assert(err.code() == LeanIMTError::WrongSiblingNodes.code())
+
+    let (_idx, err) = tree.index_of(99)
+    assert(err.code() == LeanIMTError::LeafDoesNotExist.code())
+}
+
+#[test]
+fn test_lean_update_single_leaf_and_rejects_field_sized_siblings() {
+    let mut tree = LeanIMT::empty()
+    let (_root, err) = tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let empty_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    let (_root, err) = tree.update(old_leaf: 1, new_leaf: 2, empty_siblings, 0)
+    assert(err.code() == LeanIMTError::None.code())
+    assert(tree.root() == 2)
+
+    let mut even_tree = LeanIMT::empty()
+    let (_root, err) = even_tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+    let (_root, err) = even_tree.insert(2)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let mut bad_even_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    bad_even_siblings[0] = SNARK_SCALAR_FIELD
+    let (_root, err) = even_tree.update(old_leaf: 1, new_leaf: 3, bad_even_siblings, 1)
+    assert(
+        err.code() == LeanIMTError::LeafGreaterThanSnarkScalarField.code(),
+    )
+
+    let mut odd_tree = LeanIMT::empty()
+    let (_root, err) = odd_tree.insert(1)
+    assert(err.code() == LeanIMTError::None.code())
+    let (_root, err) = odd_tree.insert(2)
+    assert(err.code() == LeanIMTError::None.code())
+
+    let mut bad_odd_siblings: [u256; MAX_DEPTH] = [0; MAX_DEPTH]
+    bad_odd_siblings[0] = SNARK_SCALAR_FIELD
+    let (_root, err) = odd_tree.update(old_leaf: 2, new_leaf: 3, bad_odd_siblings, 1)
+    assert(
+        err.code() == LeanIMTError::LeafGreaterThanSnarkScalarField.code(),
+    )
+}
+
+#[test]
+fn test_lean_updates_track_reference_roots() {
+    let mut tree = LeanIMT::empty()
+    let mut slots: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+    let slot_count = 6
+
+    let mut i: usize = 0
+    while i < slot_count {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == LeanIMTError::None.code())
+        i += 1
+    }
+    assert(tree.root() == lean_root_from_slots(slots, slot_count))
+
+    i = 0
+    while i < slot_count {
+        let old_leaf = slots[i]
+        let new_leaf = (i + 7) as u256
+        let (siblings, sibling_count) = lean_proof_from_slots(slots, slot_count, i)
+        let (_root, err) = tree.update(old_leaf, new_leaf, siblings, sibling_count)
+        assert(err.code() == LeanIMTError::None.code())
+        slots[i] = new_leaf
+        assert(tree.root() == lean_root_from_slots(slots, slot_count))
+        i += 1
+    }
+}
+
+#[test]
+fn test_lean_state_stays_consistent_after_updates_and_inserts() {
+    let mut tree = LeanIMT::empty()
+    let mut slots: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+    let mut slot_count = 5
+
+    let mut i: usize = 0
+    while i < slot_count {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == LeanIMTError::None.code())
+        i += 1
+    }
+
+    i = 0
+    while i < 3 {
+        let old_leaf = slots[i]
+        let new_leaf = (i + 10) as u256
+        let (siblings, sibling_count) = lean_proof_from_slots(slots, slot_count, i)
+        let (_root, err) = tree.update(old_leaf, new_leaf, siblings, sibling_count)
+        assert(err.code() == LeanIMTError::None.code())
+        slots[i] = new_leaf
+        i += 1
+    }
+
+    i = 5
+    while i < 8 {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == LeanIMTError::None.code())
+        slot_count += 1
+        i += 1
+    }
+
+    assert(tree.root() == lean_root_from_slots(slots, slot_count))
+}
+
+#[test]
+fn test_lean_remove_many_tracks_reference_roots() {
+    let mut tree = LeanIMT::empty()
+    let mut slots: [u256; LEAN_TEST_MAX_LEAVES] = [0; LEAN_TEST_MAX_LEAVES]
+    let slot_count = 10
+
+    let mut i: usize = 0
+    while i < slot_count {
+        let leaf = (i + 1) as u256
+        slots[i] = leaf
+        let (_root, err) = tree.insert(leaf)
+        assert(err.code() == LeanIMTError::None.code())
+        i += 1
+    }
+    assert(tree.root() == lean_root_from_slots(slots, slot_count))
+
+    i = 0
+    while i < slot_count {
+        let old_leaf = slots[i]
+        let (siblings, sibling_count) = lean_proof_from_slots(slots, slot_count, i)
+        let (_root, err) = tree.remove(old_leaf, siblings, sibling_count)
+        assert(err.code() == LeanIMTError::None.code())
+        slots[i] = 0
+        assert(tree.root() == lean_root_from_slots(slots, slot_count))
+        i += 1
+    }
+
+    assert(!tree.has(0))
+}

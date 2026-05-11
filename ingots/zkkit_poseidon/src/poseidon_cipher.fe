@@ -1,0 +1,67 @@
+/// Single-block Poseidon-based cipher used by zk-kit.
+///
+/// This matches the zk-kit/iden3 construction built on the Poseidon T=4 sponge.
+use std::evm::crypto::addmod
+
+use super::poseidon_t4::permute4
+use super::poseidon_t4_constants::PRIME
+
+/// `2^128`, used to domain-separate the sponge state from the raw `nonce`.
+const TWO_POW_128: u256 = 340282366920938463463374607431768211456
+
+/// Encrypt a single 3-word plaintext block.
+///
+/// Returns `[c0, c1, c2, tag]`.
+pub fn encrypt_block(
+    _ plaintext: [u256; 3],
+    _ key_x: u256,
+    _ key_y: u256,
+    _ nonce: u256,
+) -> [u256; 4] {
+    let state3_init = addmod(nonce, 3 * TWO_POW_128, PRIME)
+    let first = permute4(0, key_x, key_y, state3_init)
+    let c0 = addmod(first.1, plaintext[0], PRIME)
+    let c1 = addmod(first.2, plaintext[1], PRIME)
+    let c2 = addmod(first.3, plaintext[2], PRIME)
+    let tag_state = permute4(first.0, c0, c1, c2)
+    [c0, c1, c2, tag_state.1]
+}
+
+/// Decrypt a single ciphertext block.
+///
+/// Panics if the authentication tag does not match.
+pub fn decrypt_block(
+    _ ciphertext: [u256; 4],
+    _ key_x: u256,
+    _ key_y: u256,
+    _ nonce: u256,
+) -> [u256; 3] {
+    let state3_init = addmod(nonce, 3 * TWO_POW_128, PRIME)
+    let first = permute4(0, key_x, key_y, state3_init)
+    let m0 = addmod(ciphertext[0], PRIME - first.1, PRIME)
+    let m1 = addmod(ciphertext[1], PRIME - first.2, PRIME)
+    let m2 = addmod(ciphertext[2], PRIME - first.3, PRIME)
+    let tag_state = permute4(first.0, ciphertext[0], ciphertext[1], ciphertext[2])
+    assert(ciphertext[3] == tag_state.1)
+    [m0, m1, m2]
+}
+
+#[test]
+fn test_poseidon_cipher_encrypt_decrypt_roundtrip() {
+    let plaintext: [u256; 3] = [1, 2, 3]
+    let ciphertext = encrypt_block(plaintext, 12345, 67890, 42)
+    let recovered = decrypt_block(ciphertext, 12345, 67890, 42)
+    assert(recovered[0] == 1)
+    assert(recovered[1] == 2)
+    assert(recovered[2] == 3)
+}
+
+#[test]
+fn test_poseidon_cipher_domain_changes_ciphertext() {
+    let plaintext: [u256; 3] = [42, 0, 0]
+    let by_key = encrypt_block(plaintext, 100, 200, 1)
+    let other_key = encrypt_block(plaintext, 300, 400, 1)
+    let other_nonce = encrypt_block(plaintext, 100, 200, 2)
+    assert(by_key[0] != other_key[0])
+    assert(by_key[0] != other_nonce[0])
+}

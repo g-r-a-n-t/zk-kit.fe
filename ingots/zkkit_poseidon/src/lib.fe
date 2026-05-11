@@ -1,0 +1,6 @@
+/// Poseidon hashing and related constructions (cipher, nullifiers).
+pub use poseidon
+pub use poseidon_t4_constants
+pub use poseidon_t4
+pub use poseidon_cipher
+pub use poseidon_proof

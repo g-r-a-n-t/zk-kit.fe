@@ -1,0 +1,113 @@
+/// Poseidon permutation for 3-input hashing (T=4).
+use std::evm::crypto::{addmod, mulmod}
+
+use super::poseidon_t4_constants as constants
+
+fn sbox(_ x: u256) -> u256 {
+    let x2 = mulmod(x, x, constants::PRIME)
+    let x4 = mulmod(x2, x2, constants::PRIME)
+    mulmod(x4, x, constants::PRIME)
+}
+
+/// Apply the Poseidon permutation to a 4-element state.
+pub fn permute4(_ in_s0: u256, _ in_s1: u256, _ in_s2: u256, _ in_s3: u256) -> (
+    u256,
+    u256,
+    u256,
+    u256,
+) {
+    let p = constants::PRIME
+    let m = constants::M
+    let total_rounds = constants::N_ROUNDS_F + constants::N_ROUNDS_P
+    let half_full_rounds = constants::N_ROUNDS_F / 2
+    let first_final_full_round = (constants::N_ROUNDS_F / 2) + constants::N_ROUNDS_P
+    let mut s0 = in_s0
+    let mut s1 = in_s1
+    let mut s2 = in_s2
+    let mut s3 = in_s3
+    let mut round: usize = 0
+
+    while round < total_rounds {
+        let rc = round * 4
+        s0 = addmod(s0, constants::C[rc], p)
+        s1 = addmod(s1, constants::C[rc + 1], p)
+        s2 = addmod(s2, constants::C[rc + 2], p)
+        s3 = addmod(s3, constants::C[rc + 3], p)
+
+        if round < half_full_rounds || round >= first_final_full_round {
+            s0 = sbox(s0)
+            s1 = sbox(s1)
+            s2 = sbox(s2)
+            s3 = sbox(s3)
+        } else {
+            s0 = sbox(s0)
+        }
+
+        let t0 = addmod(
+            addmod(
+                addmod(mulmod(m[0][0], s0, p), mulmod(m[0][1], s1, p), p),
+                mulmod(m[0][2], s2, p),
+                p,
+            ),
+            mulmod(m[0][3], s3, p),
+            p,
+        )
+        let t1 = addmod(
+            addmod(
+                addmod(mulmod(m[1][0], s0, p), mulmod(m[1][1], s1, p), p),
+                mulmod(m[1][2], s2, p),
+                p,
+            ),
+            mulmod(m[1][3], s3, p),
+            p,
+        )
+        let t2 = addmod(
+            addmod(
+                addmod(mulmod(m[2][0], s0, p), mulmod(m[2][1], s1, p), p),
+                mulmod(m[2][2], s2, p),
+                p,
+            ),
+            mulmod(m[2][3], s3, p),
+            p,
+        )
+        let t3 = addmod(
+            addmod(
+                addmod(mulmod(m[3][0], s0, p), mulmod(m[3][1], s1, p), p),
+                mulmod(m[3][2], s2, p),
+                p,
+            ),
+            mulmod(m[3][3], s3, p),
+            p,
+        )
+        s0 = t0
+        s1 = t1
+        s2 = t2
+        s3 = t3
+        round += 1
+    }
+
+    (s0, s1, s2, s3)
+}
+
+/// Hash three field elements with Poseidon (T=4).
+pub fn hash3(_ a: u256, _ b: u256, _ c: u256) -> u256 {
+    let out = permute4(0, a, b, c)
+    out.0
+}
+
+#[test]
+fn test_poseidon_t4_hash3_vector_all_zeros_matches_reference() {
+    assert(
+        hash3(0, 0, 0) == 0x0bc188d27dcceadc1dcfb6af0a7af08fe2864eecec96c5ae7cee6db31ba599aa,
+    )
+}
+
+#[test]
+fn test_poseidon_t4_hash3_vector_1_2_3_matches_reference() {
+    let a: u256 = 1
+    let b: u256 = 2
+    let c: u256 = 3
+    assert(
+        hash3(a, b, c) == 0x0e7732d89e6939c0ff03d5e58dab6302f3230e269dc5b968f725df34ab36d732,
+    )
+}

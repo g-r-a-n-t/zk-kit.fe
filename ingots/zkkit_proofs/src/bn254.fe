@@ -1,0 +1,128 @@
+/// BN254 precompile wrappers and point helpers.
+use std::evm::{Evm, alloc}
+use std::evm::crypto
+
+use zkkit_core::field::BN254_BASE_FIELD
+
+/// BN254 G1 affine point (base field coordinates).
+pub struct G1Point { pub x: u256, pub y: u256 }
+
+/// BN254 G2 affine point over Fp2, encoded as `(imag, real)` limbs.
+///
+/// This matches the EVM precompile ABI (EIP-197 / alt_bn128 pairing).
+pub struct G2Point { pub x_imag: u256, pub x_real: u256, pub y_imag: u256, pub y_real: u256 }
+
+/// Canonical BN254 G1 generator `(1, 2)` used by the EVM precompiles.
+pub fn g1_generator() -> G1Point {
+    G1Point { x: 1, y: 2 }
+}
+
+/// Backwards-compatibility alias for older callers.
+pub fn p1() -> G1Point {
+    g1_generator()
+}
+
+#[arithmetic(unchecked)]
+pub fn g1_negate(_ p: G1Point) -> G1Point {
+    if p.x == 0 && p.y == 0 {
+        G1Point { x: 0, y: 0 }
+    } else {
+        G1Point { x: p.x, y: BN254_BASE_FIELD - (p.y % BN254_BASE_FIELD) }
+    }
+}
+
+pub fn g1_add(_ a: G1Point, _ b: G1Point) -> G1Point {
+    let out = crypto::ec_add(a.x, a.y, b.x, b.y)
+    G1Point { x: out.0, y: out.1 }
+}
+
+pub fn g1_mul(_ p: G1Point, _ s: u256) -> G1Point {
+    let out = crypto::ec_mul(p.x, p.y, s)
+    G1Point { x: out.0, y: out.1 }
+}
+
+pub fn ec_pairing_2(_ a1: G1Point, _ b1: G2Point, _ a2: G1Point, _ b2: G2Point) -> bool
+uses (evm: mut Evm)
+{
+    let ptr = alloc(384)
+    evm.mstore(addr: ptr, value: a1.x)
+    evm.mstore(addr: ptr + 32, value: a1.y)
+    evm.mstore(addr: ptr + 64, value: b1.x_imag)
+    evm.mstore(addr: ptr + 96, value: b1.x_real)
+    evm.mstore(addr: ptr + 128, value: b1.y_imag)
+    evm.mstore(addr: ptr + 160, value: b1.y_real)
+    evm.mstore(addr: ptr + 192, value: a2.x)
+    evm.mstore(addr: ptr + 224, value: a2.y)
+    evm.mstore(addr: ptr + 256, value: b2.x_imag)
+    evm.mstore(addr: ptr + 288, value: b2.x_real)
+    evm.mstore(addr: ptr + 320, value: b2.y_imag)
+    evm.mstore(addr: ptr + 352, value: b2.y_real)
+    crypto::ec_pairing(ptr, 384)
+}
+
+pub fn ec_pairing_4(
+    _ a1: G1Point,
+    _ b1: G2Point,
+    _ a2: G1Point,
+    _ b2: G2Point,
+    _ a3: G1Point,
+    _ b3: G2Point,
+    _ a4: G1Point,
+    _ b4: G2Point,
+) -> bool
+uses (evm: mut Evm)
+{
+    let ptr = alloc(768)
+    evm.mstore(addr: ptr, value: a1.x)
+    evm.mstore(addr: ptr + 32, value: a1.y)
+    evm.mstore(addr: ptr + 64, value: b1.x_imag)
+    evm.mstore(addr: ptr + 96, value: b1.x_real)
+    evm.mstore(addr: ptr + 128, value: b1.y_imag)
+    evm.mstore(addr: ptr + 160, value: b1.y_real)
+    evm.mstore(addr: ptr + 192, value: a2.x)
+    evm.mstore(addr: ptr + 224, value: a2.y)
+    evm.mstore(addr: ptr + 256, value: b2.x_imag)
+    evm.mstore(addr: ptr + 288, value: b2.x_real)
+    evm.mstore(addr: ptr + 320, value: b2.y_imag)
+    evm.mstore(addr: ptr + 352, value: b2.y_real)
+    evm.mstore(addr: ptr + 384, value: a3.x)
+    evm.mstore(addr: ptr + 416, value: a3.y)
+    evm.mstore(addr: ptr + 448, value: b3.x_imag)
+    evm.mstore(addr: ptr + 480, value: b3.x_real)
+    evm.mstore(addr: ptr + 512, value: b3.y_imag)
+    evm.mstore(addr: ptr + 544, value: b3.y_real)
+    evm.mstore(addr: ptr + 576, value: a4.x)
+    evm.mstore(addr: ptr + 608, value: a4.y)
+    evm.mstore(addr: ptr + 640, value: b4.x_imag)
+    evm.mstore(addr: ptr + 672, value: b4.x_real)
+    evm.mstore(addr: ptr + 704, value: b4.y_imag)
+    evm.mstore(addr: ptr + 736, value: b4.y_real)
+    crypto::ec_pairing(ptr, 768)
+}
+
+pub fn msm<const N: usize>(_ points: [G1Point; N], _ scalars: [u256; N]) -> G1Point {
+    let mut acc = g1_mul(points[0], scalars[0])
+    let mut i: usize = 1
+
+    while i < N {
+        acc = g1_add(acc, g1_mul(points[i], scalars[i]))
+        i += 1
+    }
+
+    acc
+}
+
+#[test]
+fn test_bn254_mul_generator_by_one() {
+    let generator = g1_generator()
+    let out = g1_mul(generator, 1)
+    assert(out.x == 1)
+    assert(out.y == 2)
+}
+
+#[test]
+fn test_bn254_add_identity() {
+    let out = g1_add(g1_generator(), G1Point { x: 0, y: 0 })
+    assert(out.x == 1)
+    assert(out.y == 2)
+}
