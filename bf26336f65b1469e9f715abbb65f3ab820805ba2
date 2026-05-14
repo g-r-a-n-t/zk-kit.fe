@@ -1,0 +1,360 @@
+# zk-kit.fe Three-Way Comparison
+
+**Date:** 2026-05-14
+
+## Synopsis
+
+This document captures a comprehensive analysis session comparing three independent implementations of the [zk-kit](https://github.com/privacy-scaling-explorations/zk-kit) cryptographic library ported to Fe, a new smart contract language targeting the EVM.
+
+### The Three Implementations
+
+1. **origin/main** (fe-lang/zk-kit.fe) -- "Ours." A 15-package workspace focused on cryptographic primitives and stateless verifiers. Strong on breadth: Poseidon (T=3/4/6 with sparse-matrix optimization), Baby JubJub, EdDSA, ECDH, Poseidon cipher, Groth16, SMT, field utilities, Fiat-Shamir transcript, and Foundry differential fuzz testing. Weak on tree CRUD and Fe idioms.
+
+2. **sbillig/main** (sbillig/zk-kit.fe) -- "Sean's." A single-ingot repo by Sean Billig, a core Fe compiler developer. Deep on stateful data structures: full CRUD for Binary IMT, Lazy IMT, Lean IMT, Quinary IMT, plus six Excubia access-control contracts with EVM integration tests. The most Fe-idiomatic of the three, using `const fn`, `static_assert`, and `impl Copy`. No EC/EdDSA/ECDH/Groth16 primitives.
+
+3. **fe-examples/zk-kit** (fe-lang/fe-examples) -- "Grant's." An 8-ingot workspace that synthesizes both bodies of work. Tree implementations derived from Sean's designs; EC/proofs/Poseidon layer carried from ours. The most complete single codebase, but has significant "vibe-transpile" artifacts: zero `const fn`, zero `static_assert`, inconsistent field arithmetic styles, `u256` used where `bool`/`u8` belong, and critical test gaps (no Groth16 tests, no valid EdDSA signature test).
+
+### Key Findings
+
+- **The three repos are complementary.** Ours has primitives + Foundry fuzz; Sean's has idiomatic stateful trees + Excubia; Grant's merges both but lacks the most Fe-native patterns.
+- **`const fn` + `static_assert`** is the single highest-value Fe idiom gap. Sean uses it to verify Poseidon hashes at compile time. Neither ours nor Grant's does.
+- **The LazyTower hash chain algorithm differs** between ours (zero-accumulator, TS-style) and Sean's/Grant's (Solidity-style). They produce incompatible hashes. Sean's matches the Solidity reference vectors.
+- **Grant's code has ~26 functions that should be `const fn`**, 4 different field arithmetic styles, 5 names for the same BN254 prime, and duplicated hash map / S-box implementations.
+- **No single repo has everything.** A complete zk-kit.fe would combine: our sparse-matrix Poseidon + T=4 + Foundry fuzz, Sean's `const fn`/`static_assert` + Excubia, and Grant's unified workspace architecture.
+
+---
+
+## Session Log
+
+### 1. Setup: Adding Sean's Repo
+
+Sean's fork (`git@github.com:sbillig/zk-kit.fe.git`) was added as the `sbillig` remote in our `zk-kit.fe` repo. His `main` branch has 20 commits ahead of origin, including IMT implementations, Excubia wrappers, Poseidon, Semaphore, and parity tests.
+
+---
+
+### 2. High-Level Comparison: Origin vs Sean
+
+#### Architecture
+
+**Ours** is a **workspace of 15 separate packages** -- each data structure/primitive is its own Fe ingot (`packages/poseidon`, `packages/imt`, `packages/baby_jubjub`, etc.), plus a `bench/` Foundry project for differential fuzz testing against Solidity/JS.
+
+**Sean's** is a **single monolithic ingot** with 9 source files under `src/`. No external dependencies, no workspace, no Foundry harness.
+
+#### What We Have That Sean Doesn't
+
+| Area | Details |
+|---|---|
+| **Baby JubJub** | Full twisted Edwards curve with 14 tests |
+| **EdDSA-Poseidon** | Signature verification on BabyJub |
+| **ECDH** | Key exchange on BabyJub |
+| **Poseidon Cipher** | Sponge encrypt/decrypt + Foundry fuzz |
+| **Poseidon Proof** | Preimage proofs & nullifiers |
+| **Groth16** | Standalone verifier package |
+| **SMT** | Sparse Merkle Tree (254-bit key space) |
+| **Keccak Merkle** | Solady-compatible proof verification |
+| **Field utils** | Type-safe modular arithmetic with const generics |
+| **Transcript** | Fiat-Shamir transcript (SHA256/Keccak) |
+| **Foundry fuzz** | Differential testing against Solidity/JS (9216 fuzz runs) |
+| **Poseidon T=4** | 3-input hash |
+
+#### What Sean Has That We Don't
+
+| Area | Details |
+|---|---|
+| **Quinary IMT** | 5-ary tree with full CRUD |
+| **Stateful Binary IMT** | `BinaryIMTData` with insert/update/remove (we only have stateless verify) |
+| **Stateful Lean IMT** | Full CRUD with batch insert, tombstone-aware hash map |
+| **Stateful Lazy IMT** | Insert/update/proof with sparse map, vs. our compute-only version |
+| **Excubia contracts** | 6 access-control gates (ERC721, Gitcoin Passport, Hats, EAS, Semaphore, ZKEdDSA) with full Groth16 verifier |
+| **Excubia mocks** | MockERC721, MockEAS, MockSemaphore, etc. |
+| **LazyTower** | More complete -- verified against 150-item Solidity vectors |
+
+#### Overlap (Different Implementations)
+
+| Area | Ours | Sean's |
+|---|---|---|
+| **Poseidon** | T=3/4/6, sparse-matrix optimization for T=3 | T=3/6 only, both dense |
+| **Binary IMT** | Stateless verify only (5 tests) | Stateless + full stateful CRUD (26 tests) |
+| **Lazy IMT** | Compute-only with hardcoded zeros (6 tests) | Stateful with sparse map, proof generation (24 tests) |
+| **Lean IMT** | Verify-only (7 tests) | Full CRUD + batch (10 tests) |
+| **LazyTower** | Smoke test (3 tests) | Full 150-item vector parity (10 tests) |
+| **Tests total** | 61 inline + 18 Foundry | 86 inline |
+
+---
+
+### 3. Fe Idiom Comparison: Origin vs Sean
+
+#### `const fn` + `static_assert` -- The Biggest Gap
+
+Sean declares Poseidon and helpers as `const fn`, enabling **compile-time evaluation**:
+
+```fe
+pub const fn hash2(_ left: u256, _ right: u256) -> u256 { ... }
+static_assert(hash2(0, 0) == 14744269619966411208...)
+```
+
+We use plain `fn` everywhere and can only test at runtime.
+
+#### Other Idiom Differences
+
+- **`impl Copy for T {}`** -- Sean explicitly implements Copy on structs; we don't.
+- **`uses (evm: mut Evm)` integration tests** -- Sean deploys contracts into Fe's built-in EVM harness; we only use plain `#[test]`.
+- **`_ param` naming convention** -- Sean uses leading underscore on params (Fe convention for external-facing labels); we don't.
+- **Full contract surface** -- Sean uses `StorageMap`, `Ctx`, `Log`, `Call`, `init()` constructors, cross-contract calls; our contracts are thin benchmark wrappers.
+
+#### Where Our Code is More Idiomatic
+
+- **Const generic depth** -- `compute_root<const DEPTH: usize>` avoids runtime bounds checking.
+- **`<const MODULUS: u256>`** in `utils::field` -- type-safe modular arithmetic.
+- **`sol()` selector macro** -- better Solidity interop than raw numeric selectors.
+- **`#[arithmetic(unchecked)]`** -- used appropriately on field inverse.
+
+---
+
+### 4. Rigorous Component-by-Component Comparison (Origin vs Sean)
+
+#### 4.1 Poseidon
+
+| | Ours | Sean's |
+|---|---|---|
+| **Widths** | T=3, T=4, T=6 | T=3, T=6 only (no T=4) |
+| **T=3 algorithm** | Sparse-matrix optimization (Filecoin/Neptune) -- saves ~228 mulmod ops | Dense MDS multiply every round |
+| **const fn** | None | All functions are `const fn` |
+| **Compile-time verification** | None -- runtime tests only | 4 `static_assert`s verify hashes at compile time |
+| **Constants storage** | Flat arrays in separate files (1167 lines) | Cascading `if round == N` branches returning tuples (1369 lines) |
+| **Field arithmetic** | Inline `addmod(x, y, PRIME)` | Wrapped in `const fn field_add/field_mul` -- cleaner, impossible to pass wrong modulus |
+| **Tests** | 8 runtime tests (T=4 gas limits prevented testing hash5 with nonzero inputs) | 0 runtime tests, but 4 `static_assert`s (no gas limit issues) |
+| **Auditability** | Sparse constants require trust in circomlibjs optimization pipeline | Raw unoptimized constants, more directly auditable |
+
+Both produce identical outputs for identical inputs. Same BN254 field, same x^5 S-box, same round counts (65 for T=3, 68 for T=6). The sparse-matrix optimization in ours saves ~1,824 gas for T=3 partial rounds.
+
+**Ideal merge:** Our sparse-matrix T=3 optimization + our T=4 support + Sean's `const fn` + `static_assert`.
+
+#### 4.2 Binary IMT
+
+| | Ours (`imt` + `binary_merkle_root`) | Sean's (`binary_imt`) |
+|---|---|---|
+| **Operations** | Verify + compute_root only | Full CRUD: init, insert, update, remove, verify |
+| **State** | Stateless free functions | Stateful `BinaryIMTData` struct tracking subtrees, zero hashes, leaf count |
+| **Depth handling** | Const generics `<const DEPTH: usize>` | Runtime `MAX_DEPTH=32` with bounds checking |
+| **Proof format** | `path_index: u256` bitfield (compact) + `[u256; N]` array variant | `[u8; 32]` indices (32 bytes vs our 1024 bytes for array variant) |
+| **Error handling** | None -- returns bare `bool` | 8-variant `IMTError` enum, validates all inputs |
+| **Tests** | 12 tests, hand-computed vectors | 28 tests including hardcoded hex roots matching Solidity |
+| **Completeness vs Solidity** | ~15-20% | ~95% |
+
+Sean's is a near-complete port of `BinaryIMT.sol`. Ours covers only verification (~15-20% of the surface).
+
+#### 4.3 Lazy IMT
+
+| | Ours | Sean's |
+|---|---|---|
+| **Operations** | `insert`, `compute_root` | init, insert, update, reset, root, root_at_depth, `merkle_proof_elements` |
+| **State** | Flat `[u256; DEPTH]` array (caller manages) | Struct with 256-slot open-addressing hash map |
+| **Zero hashes** | O(1) hardcoded lookup table | O(level) recomputation via `BinaryIMT::default_zero` |
+| **Error handling** | None | 11-variant `LazyIMTError` with field validation, tree-full, map-full, depth checks |
+| **Proof generation** | No | Yes -- `merkle_proof_elements(index, depth)` |
+| **Tests** | 5 (don't verify root correctness for >2 leaves) | 17 with cross-implementation parity against BinaryIMT at depths 1, 5, 10, 20, 32 |
+| **Potential bug in ours** | `if node == 0` shortcut treats zero-valued leaves as empty subtrees | No such shortcut |
+
+#### 4.4 Lean IMT
+
+| | Ours | Sean's |
+|---|---|---|
+| **Operations** | `verify_proof`, `verify` (2 functions) | insert, insert_many (batch 64), update, remove, has, index_of, root (8 methods) |
+| **State** | None -- stateless | `LeanIMTData` with frontier + 256-slot hash map for leaf tracking |
+| **Error handling** | None | 8-variant `LeanIMTError` |
+| **Tests** | 6 verify-only tests | 10 tests with full CRUD lifecycle |
+| **Completeness vs TS** | ~10% (verify only) | ~85% |
+
+Complementary: Sean has everything except standalone `verify_proof`; we have only `verify_proof`.
+
+#### 4.5 LazyTower
+
+| | Ours | Sean's |
+|---|---|---|
+| **Side** | Verifier (proof checking) | Prover (state building) |
+| **Operations** | `verify_membership`, `digest_chain` | `add`, `get_data_for_proving` |
+| **Parameterization** | Generic `<H, W>` | Hardcoded H=24, W=4 |
+| **Hash chain algorithm** | `H(H(H(0,a),b),c)` -- zero accumulator (TS style) | `H(H(a,b),c)` for len>=2 (Solidity style) |
+| **Tests** | 3 (smoke only) | 9 verifying exact Solidity vectors for 150-item tower |
+
+**Critical incompatibility:** The hash chain algorithms produce different results. Sean's matches the Solidity reference. A proof from Sean's tower state would **fail** our verifier.
+
+---
+
+### 5. Adding Grant's Implementation (fe-examples/zk-kit)
+
+Grant's `fe-examples/zk-kit` is organized as an 8-ingot workspace:
+
+```
+zkkit_core       -> field arithmetic, constants
+zkkit_poseidon   -> hash + cipher + proof
+zkkit_ec         -> baby_jubjub, ecdh, eddsa_poseidon
+zkkit_proofs     -> bn254, groth16
+zkkit_trees      -> all 5 tree types with full CRUD
+zkkit_contracts  -> ABI bridge + EVM integration tests
+zkkit_merkle     -> Merkle proof verification
+zkkit            -> facade re-exporting everything
+```
+
+#### Three-Way Component Comparison
+
+##### Poseidon
+
+| | Ours (origin) | Sean (sbillig) | Grant (fe-examples) |
+|---|---|---|---|
+| **Widths** | T=3, T=4, T=6 | T=3, T=6 | T=3, T=4, T=6 |
+| **T=3 algorithm** | Sparse-matrix opt | Dense | Dense |
+| **const fn** | No | Yes, all functions | No |
+| **static_assert** | No | 4 compile-time checks | No |
+| **Constants** | Flat arrays in files | `if round == N` ladder | T=3/T=6: `if` ladder; T=4: flat array |
+| **Field arithmetic** | Inline `addmod` | `const fn` wrappers | Mixed (4 different styles) |
+| **Cipher** | Yes | No | Yes |
+| **Proof/nullifiers** | Yes | No | Yes |
+| **Tests** | 8 | 0 (4 static_asserts) | 8 |
+
+##### Binary IMT
+
+| | Ours | Sean | Grant |
+|---|---|---|---|
+| **Operations** | Verify only | Full CRUD | Full CRUD |
+| **Struct design** | None (stateless fns) | `IMT` + `BinaryIMTData` | `BinaryIMTVerifier` + `BinaryIMT` |
+| **impl Copy** | No | Yes | Yes |
+| **Error handling** | None | 8-variant `IMTError` | 8-variant `IMTError` (identical) |
+| **Tests** | 12 | 28 | 21 |
+| **Solidity vectors** | No | Yes | Yes |
+
+##### Lazy IMT
+
+| | Ours | Sean | Grant |
+|---|---|---|---|
+| **Operations** | insert, compute_root | insert, update, reset, root, proof | insert, update, reset, root, proof |
+| **State** | Flat array | 256-slot hash map | 256-slot hash map (same) |
+| **Error handling** | None | 11-variant enum | 11-variant enum (identical) |
+| **Tests** | 5 | 17 | 22 |
+
+##### Lean IMT
+
+| | Ours | Sean | Grant |
+|---|---|---|---|
+| **Operations** | verify_proof, verify | Full CRUD + batch | Full CRUD + batch |
+| **State** | None | Struct + 256-slot leaf map | Struct + 256-slot leaf map |
+| **Tests** | 6 | 10 | 11 |
+
+##### Quinary IMT
+
+| | Ours | Sean | Grant |
+|---|---|---|---|
+| **Implemented** | No | Yes | Yes |
+| **Tests** | -- | 8 | 8 |
+
+##### LazyTower
+
+| | Ours | Sean | Grant |
+|---|---|---|---|
+| **Side** | Verifier | Prover/state | Prover/state |
+| **Hash chain** | Zero-accumulator (TS) | Solidity style | Solidity style |
+| **Tests** | 3 (smoke) | 9 (Solidity vectors) | 9 (Solidity vectors) |
+
+##### EC / Baby JubJub / ECDH / EdDSA
+
+| | Ours | Sean | Grant |
+|---|---|---|---|
+| **Baby JubJub** | Yes (14 tests) | No | Yes (4 tests) |
+| **ECDH** | Yes (3 tests) | No | Yes (2 tests) |
+| **EdDSA-Poseidon** | Yes (0 inline, Foundry) | No | Yes (1 test) |
+
+##### Groth16 / BN254
+
+| | Ours | Sean | Grant |
+|---|---|---|---|
+| **BN254 precompiles** | Yes | No (inline in excubia) | Yes |
+| **Groth16 verifier** | Yes (no tests) | No (embedded in excubia) | Yes (no tests) |
+
+##### Contracts
+
+| | Ours | Sean | Grant |
+|---|---|---|---|
+| **Style** | Thin bench contracts | Full Excubia gates (6 types) | ABI bridge + 11 EVM tests |
+| **Excubia** | No | Yes (6 gates + mocks) | No |
+
+##### Field Utils / Core
+
+| | Ours | Sean | Grant |
+|---|---|---|---|
+| **Const-generic field ops** | Yes | No (hardcoded prime) | Yes |
+| **Transcript (Fiat-Shamir)** | Yes | No | No |
+
+#### The Big Picture
+
+Grant's repo is a clean integration of Sean's tree work with our primitives layer. Tree code is virtually identical to Sean's. EC/proofs/field/Poseidon carries from ours. Neither Sean's `const fn`/`static_assert` nor our sparse-matrix Poseidon made it in.
+
+---
+
+### 6. Fe Idiom Evaluation of Grant's Code
+
+#### Critical: Zero `const fn`, Zero `static_assert`
+
+~26 functions across poseidon, field, baby_jubjub, and poseidon_proof are pure and should be `const fn`. All 6 known-answer hash tests should become `static_assert`.
+
+#### Inconsistent Field Arithmetic (4 Styles)
+
+| Style | Where |
+|---|---|
+| `field_add`/`field_mul` wrappers | `poseidon.fe` (T=3, T=6) |
+| Raw nested `addmod(addmod(mulmod(...)))` | `poseidon_t4.fe` (35 lines deep) |
+| Raw `mulmod` with `FIELD_MODULUS` | `baby_jubjub.fe` |
+| Raw `addmod` with `PRIME` | `poseidon_cipher.fe` |
+
+Should unify on `const fn` wrappers everywhere.
+
+#### The BN254 Prime Has 5 Names
+
+`BN254_SCALAR_FIELD`, `SNARK_SCALAR_FIELD`, `PRIME` (independent hex definition in poseidon_t4_constants!), `FIELD_MODULUS`, `FIELD`. The independent `PRIME` is a maintenance hazard. `FIELD` is dead code.
+
+#### `u256` Where `bool`/`u8` Belong
+
+- `binary_imt.fe`: `use_default_zeroes: u256` -- Sean uses `bool`
+- `lean_imt.fe`: `leaf_used: [u256; 256]` -- Sean uses `[u8; 256]`
+- `lazy_imt.fe`: `element_used: [u256; 256]` -- Sean uses `[u8; 256]`
+
+Wastes ~8KB EVM memory per map and forces `!= 0` comparisons everywhere.
+
+#### Unnecessary Point Reconstruction
+
+8 instances of `Point { x: base.x, y: base.y }` where just `base` would suffice. Fe structs are value types -- this is Rust/Solidity move-semantics thinking.
+
+#### Duplicated Code
+
+- **Hash map**: Open-addressed linear probing implemented twice (~144 lines) in `lean_imt.fe` and `lazy_imt.fe`. Should extract to shared `SparseMap` in `zkkit_core`.
+- **S-box**: `sbox_5` in `poseidon.fe` and `sbox` in `poseidon_t4.fe` are the same x^5 function with different arithmetic styles.
+
+#### Dead Backward-Compat Aliases
+
+6 unused constant aliases in `baby_jubjub.fe` (`FIELD`, `A`, `D`, `BASE_X`, `BASE_Y`, `SUBORDER`) and 5 type aliases across tree files.
+
+#### Missing Named Labels on Crypto Calls
+
+Grant uses positional args (`crypto::ec_add(a.x, a.y, b.x, b.y)`); Sean uses named labels (`ec_add(ax: x0, ay: y0, bx: x1, by: y1)`). Named style is more readable for multi-argument crypto calls.
+
+#### Critical Test Gaps
+
+| Module | Issue |
+|---|---|
+| `groth16.fe` | **Zero tests.** A proof verifier with no tests. |
+| `eddsa_poseidon.fe` | Only negative test. No valid signature roundtrip. |
+| `bn254.fe` | 6 of 8 functions untested |
+| `field.fe` | `exp`, `neg`, `sub` have no dedicated tests |
+
+#### Priority Improvement List
+
+1. **Add `const fn` to ~26 pure functions** -- biggest idiom gap vs Sean
+2. **Add `static_assert` for 6+ hash KATs** -- compile-time correctness
+3. **Unify field arithmetic on `const fn` wrappers** -- eliminate 4-style inconsistency
+4. **`bool`/`u8` instead of `u256`** for flags and map occupancy
+5. **Remove `Point` reconstructions** -- 8 instances
+6. **Extract shared `SparseMap`** into `zkkit_core` -- ~144 lines duplicated
+7. **Single `PRIME` source of truth** -- eliminate `poseidon_t4_constants::PRIME`
+8. **Shared `const fn sbox`** -- eliminate duplicate S-box
+9. **Delete dead aliases** -- 11 unused type/constant aliases
+10. **Test groth16 and eddsa happy path** -- critical coverage gaps
