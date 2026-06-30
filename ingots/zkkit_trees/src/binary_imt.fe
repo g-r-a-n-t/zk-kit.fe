@@ -168,8 +168,8 @@ impl BinaryIMT {
     ///
     /// This starts from `0` at the leaf level and repeatedly hashes pairs
     /// upward: `z_{i+1} = hash2(z_i, z_i)`.
-    pub fn default_zero(_ index: usize) -> u256 {
-        assert(index <= MAX_DEPTH)
+    pub const fn default_zero(_ index: usize) -> u256 {
+        assert!(index <= MAX_DEPTH, "depth too large")
 
         let mut z: u256 = 0
         let mut i: usize = 0
@@ -350,6 +350,19 @@ impl BinaryIMT {
     }
 }
 
+static_assert(BinaryIMT::default_zero(0) == 0)
+static_assert(
+    BinaryIMT::default_zero(1)
+        == 14744269619966411208579211824598458697587494354926760081771325075741142829156
+)
+static_assert(
+    BinaryIMT::default_zero(2)
+        == 7423237065226347324353380772367382631490014989348495481811164164159255474657
+)
+static_assert(
+    BinaryIMT::default_zero(3)
+        == 11286972368698509976183087595462810875513684078608517520839298933882497716792
+)
 fn depth2_root(_ l0: u256, _ l1: u256, _ l2: u256, _ l3: u256) -> u256 {
     hash2(hash2(l0, l1), hash2(l2, l3))
 }

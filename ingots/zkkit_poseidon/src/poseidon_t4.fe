@@ -3,14 +3,14 @@ use std::evm::crypto::{addmod, mulmod}
 
 use super::poseidon_t4_constants as constants
 
-fn sbox(_ x: u256) -> u256 {
+const fn sbox(_ x: u256) -> u256 {
     let x2 = mulmod(x, x, constants::PRIME)
     let x4 = mulmod(x2, x2, constants::PRIME)
     mulmod(x4, x, constants::PRIME)
 }
 
 /// Apply the Poseidon permutation to a 4-element state.
-pub fn permute4(_ in_s0: u256, _ in_s1: u256, _ in_s2: u256, _ in_s3: u256) -> (
+pub const fn permute4(_ in_s0: u256, _ in_s1: u256, _ in_s2: u256, _ in_s3: u256) -> (
     u256,
     u256,
     u256,
@@ -90,10 +90,13 @@ pub fn permute4(_ in_s0: u256, _ in_s1: u256, _ in_s2: u256, _ in_s3: u256) -> (
 }
 
 /// Hash three field elements with Poseidon (T=4).
-pub fn hash3(_ a: u256, _ b: u256, _ c: u256) -> u256 {
+pub const fn hash3(_ a: u256, _ b: u256, _ c: u256) -> u256 {
     let out = permute4(0, a, b, c)
     out.0
 }
+
+static_assert(hash3(0, 0, 0) == 0x0bc188d27dcceadc1dcfb6af0a7af08fe2864eecec96c5ae7cee6db31ba599aa)
+static_assert(hash3(1, 2, 3) == 0x0e7732d89e6939c0ff03d5e58dab6302f3230e269dc5b968f725df34ab36d732)
 
 #[test]
 fn test_poseidon_t4_hash3_vector_all_zeros_matches_reference() {
