@@ -36,7 +36,7 @@ zk-kit/
 
 ## Public Contracts
 
-`fe build zk-kit` emits the following contracts with Solidity-compatible selectors:
+`fe build zk-kit --emit bytecode,runtime-bytecode,abi,metadata` emits the following contracts with Solidity-compatible selectors:
 
 - **ZkKitPoseidon** -- `hash2`, `hash3`, `hash5`
 - **ZkKitPoseidonCipher** -- `encryptBlock`, `decryptBlock`
@@ -60,7 +60,7 @@ fe check zk-kit
 Build deployable contract artifacts:
 
 ```sh
-fe build zk-kit
+fe build zk-kit --emit bytecode,runtime-bytecode,abi,metadata
 ```
 
 Run tests per ingot (the workspace is split so you can test subsystems independently):
@@ -75,7 +75,6 @@ fe test --grouped -O0 zk-kit/ingots/zkkit_contracts
 
 ## Known Gaps
 
-- Poseidon: adopt `const fn` and `static_assert` for compile-time hash verification
 - Poseidon T=3: port sparse-matrix optimization for partial rounds
 - Groth16: needs tests
 - EdDSA-Poseidon: needs valid-signature test (only rejection test exists)

@@ -507,9 +507,7 @@ pub contract ZkKitPoseidonMerkle {
         ComputeBinaryRoot { leaf, depth, path_index, siblings } -> u256
         uses (evm: mut Evm)
         {
-            if depth > 32 {
-                evm.revert(offset: 0, len: 0)
-            }
+            assert!(depth <= 32, "depth too large")
 
             zkkit_merkle::merkle::binary_root<Poseidon2Hasher, 32>(
                 leaf,
@@ -522,9 +520,7 @@ pub contract ZkKitPoseidonMerkle {
         VerifyBinary { root, leaf, depth, path_index, siblings } -> bool
         uses (evm: mut Evm)
         {
-            if depth > 32 {
-                evm.revert(offset: 0, len: 0)
-            }
+            assert!(depth <= 32, "depth too large")
 
             zkkit_merkle::merkle::binary_verify<Poseidon2Hasher, 32>(
                 root,
