@@ -32,12 +32,18 @@ pub fn g1_negate(_ p: G1Point) -> G1Point {
 }
 
 pub fn g1_add(_ a: G1Point, _ b: G1Point) -> G1Point {
-    let out = crypto::ec_add(a.x, a.y, b.x, b.y)
+    let out = match crypto::ec_add(ax: a.x, ay: a.y, bx: b.x, by: b.y) {
+        Ok(value) => value,
+        Err(_) => panic(),
+    }
     G1Point { x: out.0, y: out.1 }
 }
 
 pub fn g1_mul(_ p: G1Point, _ s: u256) -> G1Point {
-    let out = crypto::ec_mul(p.x, p.y, s)
+    let out = match crypto::ec_mul(px: p.x, py: p.y, s: s) {
+        Ok(value) => value,
+        Err(_) => panic(),
+    }
     G1Point { x: out.0, y: out.1 }
 }
 
@@ -57,7 +63,10 @@ uses (evm: mut Evm)
     evm.mstore(addr: ptr + 288, value: b2.x_real)
     evm.mstore(addr: ptr + 320, value: b2.y_imag)
     evm.mstore(addr: ptr + 352, value: b2.y_real)
-    crypto::ec_pairing(ptr, 384)
+    match crypto::ec_pairing(offset: ptr, len: 384) {
+        Ok(value) => value,
+        Err(_) => panic(),
+    }
 }
 
 pub fn ec_pairing_4(
@@ -97,7 +106,10 @@ uses (evm: mut Evm)
     evm.mstore(addr: ptr + 672, value: b4.x_real)
     evm.mstore(addr: ptr + 704, value: b4.y_imag)
     evm.mstore(addr: ptr + 736, value: b4.y_real)
-    crypto::ec_pairing(ptr, 768)
+    match crypto::ec_pairing(offset: ptr, len: 768) {
+        Ok(value) => value,
+        Err(_) => panic(),
+    }
 }
 
 pub fn msm<const N: usize>(_ points: [G1Point; N], _ scalars: [u256; N]) -> G1Point {

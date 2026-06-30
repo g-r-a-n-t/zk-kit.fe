@@ -11,36 +11,48 @@ pub const BN254_SCALAR_FIELD: u256 = 2188824287183927522224640574525727508854836
 pub const BN254_BASE_FIELD: u256 = 21888242871839275222246405745257275088696311157297823662689037894645226208583
 
 /// Addition modulo `MODULUS`.
-pub fn add<const MODULUS: u256>(_ a: u256, _ b: u256) -> u256 {
+pub const fn add<const MODULUS: u256>(_ a: u256, _ b: u256) -> u256 {
     addmod(a, b, MODULUS)
 }
 
 /// Subtraction modulo `MODULUS`.
-pub fn sub<const MODULUS: u256>(_ a: u256, _ b: u256) -> u256 {
+pub const fn sub<const MODULUS: u256>(_ a: u256, _ b: u256) -> u256 {
     addmod(a, MODULUS - (b % MODULUS), MODULUS)
 }
 
 /// Multiplication modulo `MODULUS`.
-pub fn mul<const MODULUS: u256>(_ a: u256, _ b: u256) -> u256 {
+pub const fn mul<const MODULUS: u256>(_ a: u256, _ b: u256) -> u256 {
     mulmod(a, b, MODULUS)
 }
 
 /// Modular exponentiation.
 pub fn exp<const MODULUS: u256>(_ base: u256, _ exponent: u256) -> u256 {
-    modexp(base, exponent, MODULUS)
+    match modexp(base: base, exp: exponent, modulus: MODULUS) {
+        Ok(value) => value,
+        Err(_) => panic(),
+    }
 }
 
 /// Multiplicative inverse modulo `MODULUS` via Fermat's little theorem.
 #[arithmetic(unchecked)]
 pub fn inv<const MODULUS: u256>(_ a: u256) -> u256 {
-    modexp(a, MODULUS - 2, MODULUS)
+    match modexp(base: a, exp: MODULUS - 2, modulus: MODULUS) {
+        Ok(value) => value,
+        Err(_) => panic(),
+    }
 }
 
 /// Additive inverse modulo `MODULUS`.
-pub fn neg<const MODULUS: u256>(_ a: u256) -> u256 {
+pub const fn neg<const MODULUS: u256>(_ a: u256) -> u256 {
     let reduced = a % MODULUS
     if reduced == 0 { 0 } else { MODULUS - reduced }
 }
+
+static_assert(add<BN254_SCALAR_FIELD>(BN254_SCALAR_FIELD - 1, 2) == 1)
+static_assert(sub<BN254_SCALAR_FIELD>(1, 2) == BN254_SCALAR_FIELD - 1)
+static_assert(mul<BN254_SCALAR_FIELD>(3, 7) == 21)
+static_assert(neg<BN254_SCALAR_FIELD>(0) == 0)
+static_assert(neg<BN254_SCALAR_FIELD>(3) == BN254_SCALAR_FIELD - 3)
 
 #[test]
 fn test_field_add_sub_mul_inv() {
